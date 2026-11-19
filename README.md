@@ -74,6 +74,14 @@ cargo test --workspace           # モデルの要らないテスト
 nix build                        # result/bin/rinzed
 ```
 
+rinzed と Neovim プラグインは既定のソケットのパスを別々に組み立てる。
+両者が同じパスを返すことは `crates/rinzed/tests/fixtures/default_socket.json` の表で確かめる。
+Rust 側は `cargo test --workspace` (と `nix build`) に含まれ、Lua 側は次で走らせる。
+
+```sh
+nvim --headless --clean -l tests/nvim/default_socket.lua
+```
+
 x86_64 では flake が `RUSTFLAGS` で AVX2 などを明示する。指定しないと ggml の SIMD が無効になり、変換が約 5 倍遅くなる。
 
 ### モデルと辞書

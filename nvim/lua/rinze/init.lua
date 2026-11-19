@@ -23,17 +23,6 @@ local special_keys = {
   ['<C-g>'] = 'ctrl-g',
 }
 
-local function default_socket()
-  if vim.fn.has('mac') == 1 then
-    return vim.env.HOME .. '/Library/Caches/rinze/rinze.sock'
-  end
-  local dir = vim.env.XDG_RUNTIME_DIR
-  if dir and dir ~= '' then
-    return dir .. '/rinze.sock'
-  end
-  return '/tmp/rinze-' .. (vim.env.USER or '') .. '.sock'
-end
-
 local function try_connect(path)
   local ok, chan = pcall(vim.fn.sockconnect, 'pipe', path, { rpc = true })
   if ok and chan > 0 then
@@ -48,7 +37,7 @@ local function connect()
   if state.chan and next(vim.api.nvim_get_chan_info(state.chan)) then
     return state.chan
   end
-  local path = config.socket or default_socket()
+  local path = config.socket or require('rinze.socket').default()
   local chan = try_connect(path)
   if not chan then
     if not config.cmd then

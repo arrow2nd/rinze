@@ -1,0 +1,73 @@
+[
+  {
+    "name": "Linux で XDG_RUNTIME_DIR があればその下に置く",
+    "os": "linux",
+    "env": { "XDG_RUNTIME_DIR": "/run/user/1000", "USER": "alice", "HOME": "/home/alice" },
+    "socket": "/run/user/1000/rinze.sock"
+  },
+  {
+    "name": "Linux で XDG_RUNTIME_DIR の末尾に / があっても同じ場所を指す",
+    "os": "linux",
+    "env": { "XDG_RUNTIME_DIR": "/run/user/1000/", "USER": "alice" },
+    "socket": "/run/user/1000/rinze.sock"
+  },
+  {
+    "name": "Linux で XDG_RUNTIME_DIR があれば HOME が無くても決まる",
+    "os": "linux",
+    "env": { "XDG_RUNTIME_DIR": "/run/user/1000" },
+    "socket": "/run/user/1000/rinze.sock"
+  },
+  {
+    "name": "Linux で XDG_RUNTIME_DIR が無ければ /tmp に利用者名で置く",
+    "os": "linux",
+    "env": { "USER": "alice", "HOME": "/home/alice" },
+    "socket": "/tmp/rinze-alice.sock"
+  },
+  {
+    "name": "Linux で XDG_RUNTIME_DIR が空なら無い場合と同じ",
+    "os": "linux",
+    "env": { "XDG_RUNTIME_DIR": "", "USER": "alice" },
+    "socket": "/tmp/rinze-alice.sock"
+  },
+  {
+    "name": "Linux で XDG_RUNTIME_DIR も USER も無ければ利用者名を空にする",
+    "os": "linux",
+    "env": {},
+    "socket": "/tmp/rinze-.sock"
+  },
+  {
+    "name": "Linux で USER が空なら無い場合と同じ",
+    "os": "linux",
+    "env": { "USER": "" },
+    "socket": "/tmp/rinze-.sock"
+  },
+  {
+    "name": "macOS では XDG_RUNTIME_DIR と TMPDIR を見ずに HOME の下に置く",
+    "os": "macos",
+    "env": {
+      "HOME": "/Users/alice",
+      "XDG_RUNTIME_DIR": "/run/user/501",
+      "TMPDIR": "/var/folders/xx/T/",
+      "USER": "alice"
+    },
+    "socket": "/Users/alice/Library/Caches/rinze/rinze.sock"
+  },
+  {
+    "name": "macOS で HOME の末尾に / があっても同じ場所を指す",
+    "os": "macos",
+    "env": { "HOME": "/Users/alice/" },
+    "socket": "/Users/alice/Library/Caches/rinze/rinze.sock"
+  },
+  {
+    "name": "macOS で HOME が無ければ決められない",
+    "os": "macos",
+    "env": { "XDG_RUNTIME_DIR": "/run/user/501", "USER": "alice" },
+    "socket": null
+  },
+  {
+    "name": "macOS で HOME が空なら無い場合と同じ",
+    "os": "macos",
+    "env": { "HOME": "", "USER": "alice" },
+    "socket": null
+  }
+]
