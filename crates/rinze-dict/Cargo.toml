@@ -1,0 +1,7 @@
+[package]
+name = "rinze-dict"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+encoding_rs.workspace = true

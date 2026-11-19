@@ -1,0 +1,21 @@
+[workspace]
+resolver = "3"
+members = ["crates/rinze-engine", "crates/rinze-dict", "crates/rinze-zenz", "crates/rinzed"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+rinze-engine = { path = "crates/rinze-engine" }
+rinze-dict = { path = "crates/rinze-dict" }
+rinze-zenz = { path = "crates/rinze-zenz" }
+# 点数は llama.cpp の版で 0.1〜1 nat 動くので、版を固定する
+llama-cpp-2 = { version = "=0.1.161", default-features = false }
+encoding_rs = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rmpv = "1"
+
+[profile.release]
+debug = false

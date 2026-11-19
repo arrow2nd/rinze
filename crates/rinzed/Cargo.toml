@@ -1,0 +1,14 @@
+[package]
+name = "rinzed"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rinze-engine.workspace = true
+rinze-dict.workspace = true
+rinze-zenz.workspace = true
+rmpv.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true

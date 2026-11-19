@@ -1,0 +1,6 @@
+[package]
+name = "rinze-engine"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
