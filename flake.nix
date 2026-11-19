@@ -39,7 +39,7 @@
           cargoLock.lockFile = ./Cargo.lock;
           cargoBuildFlags = [ "-p" "rinzed" ];
           nativeBuildInputs = nativeDeps pkgs;
-          doCheck = false;
+          cargoTestFlags = [ "--workspace" ];
         } // simdEnv pkgs);
       });
     };

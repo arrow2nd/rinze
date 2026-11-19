@@ -28,8 +28,9 @@ local function float_text()
   end
 end
 
+local snapshot = '<F12>'
 local snapshots
-vim.keymap.set('i', '<F12>', function()
+vim.keymap.set('i', snapshot, function()
   table.insert(snapshots, { preedit = rinze.preedit(), buffer = buffer_text(), list = float_text() })
 end)
 
@@ -40,14 +41,15 @@ local function type_in_new_buffer(keys)
   return buffer_text(), snapshots
 end
 
--- 打つ Space は先読み中のキーより前に差し込むので、<F11> のあとに書いたキーは登録に入ってから処理される
+local space_until_registration = '<F11>'
+-- 打つ Space は先読み中のキーより前に差し込むので、space_until_registration のあとに書いたキーは登録に入ってから処理される
 local seen
-vim.keymap.set('i', '<F11>', function()
+vim.keymap.set('i', space_until_registration, function()
   if (float_text() or ''):find('辞書登録', 1, true) or #seen > 30 then
     return
   end
   table.insert(seen, vim.trim(rinze.preedit() .. ' ' .. (float_text() or '')))
-  vim.api.nvim_feedkeys(vim.keycode('<Space><F11>'), 'i', false)
+  vim.api.nvim_feedkeys(vim.keycode('<Space>' .. space_until_registration), 'i', false)
 end)
 
 local long_socket = vim.fn.tempname() .. string.rep('x', 120) .. '.sock'
@@ -61,22 +63,22 @@ check('開始時に常駐プロセスが動いていない', vim.uv.fs_stat(sock
 vim.cmd('RinzeEnable')
 check('RinzeEnable で常駐プロセスが起動する', vim.uv.fs_stat(socket) ~= nil, true)
 
-local text, snaps = type_in_new_buffer('Asita<Space><F12>AEmasuka')
+local text, snaps = type_in_new_buffer('Asita<Space>' .. snapshot .. 'AEmasuka')
 check('Asita<Space> の途中', snaps[1], { preedit = '▼明日', buffer = '' })
 check('Asita<Space>AEmasuka のバッファ', text, '明日会えますか')
 
-text, snaps = type_in_new_buffer('Mayone-zu<Space><F12>woAE<F12>masu')
+text, snaps = type_in_new_buffer('Mayone-zu<Space>' .. snapshot .. 'woAE' .. snapshot .. 'masu')
 check('辞書に無い Mayone-zu<Space> は生成した表記が最初の候補', snaps[1].preedit, '▼マヨネーズ')
 check('Mayone-zu<Space>woAE の途中', snaps[2], { preedit = '▼和え', buffer = 'マヨネーズを' })
 check('Mayone-zu<Space>woAEmasu のバッファ', text, 'マヨネーズを和えます')
 
-text, snaps = type_in_new_buffer('koredeAT<F12>t<F12><Space><F12>eimasuka?')
+text, snaps = type_in_new_buffer('koredeAT' .. snapshot .. 't' .. snapshot .. '<Space>' .. snapshot .. 'eimasuka?')
 check('koredeAT の途中', snaps[1], { preedit = '▽あ*t', buffer = 'これで' })
 check('koredeATt の途中', snaps[2], { preedit = '▼会っt', buffer = 'これで' })
 check('<Space> で 2 番目の候補', snaps[3], { preedit = '▼合っt', buffer = 'これで' })
 check('koredeATteimasuka? のバッファ', text, 'これで合っていますか？')
 
-text, snaps = type_in_new_buffer('Kanji<Space><Space><Space><Space><F12><Space><F12>a<F12>')
+text, snaps = type_in_new_buffer('Kanji<Space><Space><Space><Space>' .. snapshot .. '<Space>' .. snapshot .. 'a' .. snapshot)
 print('一覧の表示: ' .. vim.inspect(snaps))
 check('4 回目の Space まではその場に出す', snaps[1].list, nil)
 check('5 回目の Space で一覧を出す', snaps[2].list and snaps[2].list:match('^a:') ~= nil, true)
@@ -86,7 +88,7 @@ text = type_in_new_buffer('a<Space>i<CR>u<BS>e')
 check('素通しした空白・改行・後退', text, 'あ い\nえ')
 
 seen = {}
-text, snaps = type_in_new_buffer('Rinze<Space><F11><F12>Rin<Space><F12><CR>ze<F12><CR><F12>')
+text, snaps = type_in_new_buffer('Rinze<Space>' .. space_until_registration .. snapshot .. 'Rin<Space>' .. snapshot .. '<CR>ze' .. snapshot .. '<CR>' .. snapshot)
 print('りんぜ で送った候補: ' .. vim.inspect(seen))
 print('登録の途中: ' .. vim.inspect(snaps))
 check('辞書に無い読みは生成した表記から始まる', seen[1] ~= '▼りんぜ' and seen[1]:match('^▼') ~= nil, true)
@@ -97,7 +99,7 @@ check('登録する語は送った候補に無かった', table.concat(seen, '\n
 check('Enter で登録した語を元の位置に確定する', { snaps[4].buffer, snaps[4].list, text }, { word, nil, word })
 check('ユーザー辞書に書く', vim.fn.readfile(user_dict)[4], 'りんぜ /' .. word .. '/')
 
-text, snaps = type_in_new_buffer('Rinze<Space><F12>')
+text, snaps = type_in_new_buffer('Rinze<Space>' .. snapshot)
 check('登録した語が次の変換で候補に出る', snaps[1].preedit, '▼' .. word)
 
 vim.fn.system({ 'pkill', '-f', '--socket ' .. socket })
@@ -105,7 +107,7 @@ vim.wait(5000, function()
   return vim.fn.system({ 'pgrep', '-f', '--socket ' .. socket }) == ''
 end, 50)
 check('止めた rinzed のソケットが残っている', vim.uv.fs_stat(socket) ~= nil, true)
-text, snaps = type_in_new_buffer('Rinze<Space><F12>')
+text, snaps = type_in_new_buffer('Rinze<Space>' .. snapshot)
 check('残ったソケットを片付けて起動し直した rinzed でも登録した語が出る', snaps[1].preedit, '▼' .. word)
 
 if failures > 0 then

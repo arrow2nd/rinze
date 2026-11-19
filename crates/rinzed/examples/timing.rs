@@ -2,25 +2,54 @@ use std::time::Instant;
 
 use rinze_dict::Dictionary;
 use rinze_engine::{Okuri, Query};
-use rinze_zenz::Zenz;
+use rinze_zenz::{Model, Zenz};
 use rinzed::Backend;
 use rinzed::user_dict::UserDictionary;
 
-type Case = (&'static str, &'static str, Option<(char, &'static str)>);
+struct Case {
+    left_context: &'static str,
+    reading: &'static str,
+    okuri: Option<Okuri>,
+}
 
-const CASES: &[Case] = &[
-    ("", "あした", None),
-    ("今日は", "てんき", None),
-    ("", "かんじ", None),
-    ("これで", "あ", Some(('t', "っ"))),
-    ("明日", "あ", Some(('e', "え"))),
-    ("", "まよねーず", None),
-    ("", "りんぜ", None),
-    ("", "ちゃっとじーぴーてぃー", None),
-    ("今日は", "てんきがいい", None),
-    ("", "ぐーぐるどらいぶ", None),
-];
+fn case(left_context: &'static str, reading: &'static str) -> Case {
+    Case {
+        left_context,
+        reading,
+        okuri: None,
+    }
+}
 
+fn okuri_case(
+    left_context: &'static str,
+    reading: &'static str,
+    consonant: char,
+    kana: &str,
+) -> Case {
+    Case {
+        left_context,
+        reading,
+        okuri: Some(Okuri {
+            consonant,
+            kana: kana.into(),
+        }),
+    }
+}
+
+fn cases() -> Vec<Case> {
+    vec![
+        case("", "あした"),
+        case("今日は", "てんき"),
+        case("", "かんじ"),
+        okuri_case("これで", "あ", 't', "っ"),
+        okuri_case("明日", "あ", 'e', "え"),
+        case("", "まよねーず"),
+        case("", "りんぜ"),
+        case("", "ちゃっとじーぴーてぃー"),
+        case("今日は", "てんきがいい"),
+        case("", "ぐーぐるどらいぶ"),
+    ]
+}
 fn median(mut v: Vec<f64>) -> f64 {
     v.sort_by(f64::total_cmp);
     v[v.len() / 2]
@@ -28,23 +57,20 @@ fn median(mut v: Vec<f64>) -> f64 {
 
 fn main() {
     let runs: usize = std::env::args().nth(1).map_or(11, |s| s.parse().unwrap());
+    let model = Model::load(std::env::var("RINZE_MODEL").unwrap().as_ref()).unwrap();
     let backend = Backend::new(
         Dictionary::from_bytes(&std::fs::read(std::env::var("RINZE_DICT").unwrap()).unwrap()),
-        UserDictionary::default(),
-        Zenz::load(std::env::var("RINZE_MODEL").unwrap().as_ref(), 8).unwrap(),
+        UserDictionary::in_memory(),
+        Zenz::new(&model, 8).unwrap(),
     );
     println!(
         "読み\t辞書の候補数\t並べ替え ms (中央値/最小/最大)\t生成 ms (中央値/最小/最大)\t生成した候補"
     );
-    for &(left, reading, okuri) in CASES {
-        let okuri = okuri.map(|(consonant, kana)| Okuri {
-            consonant,
-            kana: kana.into(),
-        });
+    for case in cases() {
         let query = Query {
-            left_context: left,
-            reading,
-            okuri: okuri.as_ref(),
+            left_context: case.left_context,
+            reading: case.reading,
+            okuri: case.okuri.as_ref(),
         };
         let (mut rank, mut generate) = (Vec::new(), Vec::new());
         let (mut n, mut words) = (0, Vec::new());
@@ -65,8 +91,9 @@ fn main() {
             )
         };
         let shown = format!(
-            "{reading}{}",
-            okuri
+            "{}{}",
+            case.reading,
+            case.okuri
                 .as_ref()
                 .map_or(String::new(), |o| format!("*{}", o.kana))
         );

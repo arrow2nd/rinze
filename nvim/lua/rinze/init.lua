@@ -12,8 +12,8 @@ local state = {
   chan = nil,
   enabled = false,
   preedit = '',
-  list_buf = nil,
-  list_win = nil,
+  float_buf = nil,
+  float_win = nil,
 }
 
 local special_keys = {
@@ -41,6 +41,8 @@ local function try_connect(path)
   end
 end
 
+local EXIT_ANOTHER_RINZED_SERVES = 0
+
 local function connect()
   -- 常駐プロセスが落ちて閉じた接続は情報が空になるので、つなぎ直す
   if state.chan and next(vim.api.nvim_get_chan_info(state.chan)) then
@@ -67,12 +69,15 @@ local function connect()
     if job <= 0 then
       error('rinze: 常駐プロセスを起動できない: ' .. table.concat(cmd, ' '))
     end
+    local function failed_to_start()
+      return exit_code ~= nil and exit_code ~= EXIT_ANOTHER_RINZED_SERVES
+    end
     vim.wait(config.startup_timeout, function()
       chan = try_connect(path)
-      return chan ~= nil or (exit_code ~= nil and exit_code ~= 0)
+      return chan ~= nil or failed_to_start()
     end, 50)
     if not chan then
-      local reason = (exit_code ~= nil and exit_code ~= 0)
+      local reason = failed_to_start()
           and ('終了した: ' .. vim.trim(table.concat(stderr, '\n')))
         or (config.startup_timeout .. 'ms 以内に待ち受けを始めなかった')
       error('rinze: 常駐プロセスが' .. reason)
@@ -91,18 +96,18 @@ local function request(method, ...)
   return res
 end
 
-local function close_list()
-  if state.list_win and vim.api.nvim_win_is_valid(state.list_win) then
-    vim.api.nvim_win_close(state.list_win, true)
+local function close_float()
+  if state.float_win and vim.api.nvim_win_is_valid(state.float_win) then
+    vim.api.nvim_win_close(state.float_win, true)
   end
-  state.list_win = nil
+  state.float_win = nil
 end
 
 local function present(v)
   return v ~= nil and v ~= vim.NIL
 end
 
-local function show_list(registration, candidates)
+local function show_float(registration, candidates)
   local lines = {}
   if present(registration) then
     table.insert(lines, registration.prompt .. registration.text .. registration.preedit)
@@ -115,13 +120,13 @@ local function show_list(registration, candidates)
     table.insert(lines, table.concat(parts, '  ') .. string.format('  [%d/%d]', candidates.page + 1, candidates.pages))
   end
   if #lines == 0 then
-    close_list()
+    close_float()
     return
   end
-  if not (state.list_buf and vim.api.nvim_buf_is_valid(state.list_buf)) then
-    state.list_buf = vim.api.nvim_create_buf(false, true)
+  if not (state.float_buf and vim.api.nvim_buf_is_valid(state.float_buf)) then
+    state.float_buf = vim.api.nvim_create_buf(false, true)
   end
-  vim.api.nvim_buf_set_lines(state.list_buf, 0, -1, false, lines)
+  vim.api.nvim_buf_set_lines(state.float_buf, 0, -1, false, lines)
   local width = 1
   for _, line in ipairs(lines) do
     width = math.max(width, vim.fn.strdisplaywidth(line))
@@ -135,11 +140,11 @@ local function show_list(registration, candidates)
     style = 'minimal',
     focusable = false,
   }
-  if state.list_win and vim.api.nvim_win_is_valid(state.list_win) then
-    vim.api.nvim_win_set_config(state.list_win, opts)
+  if state.float_win and vim.api.nvim_win_is_valid(state.float_win) then
+    vim.api.nvim_win_set_config(state.float_win, opts)
   else
     opts.noautocmd = true
-    state.list_win = vim.api.nvim_open_win(state.list_buf, false, opts)
+    state.float_win = vim.api.nvim_open_win(state.float_buf, false, opts)
   end
 end
 
@@ -158,7 +163,7 @@ local function render(res)
       virt_text_pos = 'inline',
     })
   end
-  show_list(res.registration, res.candidates)
+  show_float(res.registration, res.candidates)
 end
 
 local function on_key(name, lhs)

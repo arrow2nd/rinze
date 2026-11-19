@@ -1,6 +1,6 @@
 use rinze_dict::Dictionary;
 use rinze_engine::{Okuri, Query};
-use rinze_zenz::Zenz;
+use rinze_zenz::{Model, Zenz};
 use rinzed::Backend;
 use rinzed::user_dict::UserDictionary;
 use serde::Deserialize;
@@ -12,7 +12,8 @@ struct Case {
     yomi: String,
     okuri_key: String,
     okuri: String,
-    order: Vec<String>,
+    #[serde(rename = "order")]
+    spike_order: Vec<String>,
 }
 
 #[test]
@@ -21,10 +22,11 @@ fn 試作と同じ順位に並べる() {
         eprintln!("RINZE_MODEL と RINZE_DICT が無いので飛ばす");
         return;
     };
+    let model = Model::load(model.as_ref()).unwrap();
     let backend = Backend::new(
         Dictionary::from_bytes(&std::fs::read(dict).unwrap()),
-        UserDictionary::default(),
-        Zenz::load(model.as_ref(), 8).unwrap(),
+        UserDictionary::in_memory(),
+        Zenz::new(&model, 8).unwrap(),
     );
     let cases: Vec<Case> =
         serde_json::from_str(include_str!("fixtures/spike_ranking.json")).unwrap();
@@ -42,8 +44,12 @@ fn 試作と同じ順位に並べる() {
                 reading: &case.yomi,
                 okuri: okuri.as_ref(),
             });
-            (got != case.order)
-                .then(|| format!("{}: 期待 {:?}\n    実際 {:?}", case.id, case.order, got))
+            (got != case.spike_order).then(|| {
+                format!(
+                    "{}: 期待 {:?}\n    実際 {:?}",
+                    case.id, case.spike_order, got
+                )
+            })
         })
         .collect();
     assert!(

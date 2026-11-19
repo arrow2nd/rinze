@@ -6,22 +6,33 @@ use std::path::{Path, PathBuf};
 
 use rinze_dict::Dictionary;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct UserDictionary {
-    path: Option<PathBuf>,
-    text: String,
+    storage: Storage,
     dict: Dictionary,
+}
+
+#[derive(Debug)]
+enum Storage {
+    File(PathBuf),
+    Memory(String),
 }
 
 impl UserDictionary {
     /// ファイルが無ければ空の辞書として始め、最初の登録で作る。
     pub fn open(path: PathBuf) -> io::Result<Self> {
-        let text = read(&path)?;
+        let text = read_or_empty(&path)?;
         Ok(Self {
-            path: Some(path),
             dict: Dictionary::parse(&text),
-            text,
+            storage: Storage::File(path),
         })
+    }
+
+    pub fn in_memory() -> Self {
+        Self {
+            storage: Storage::Memory(String::new()),
+            dict: Dictionary::default(),
+        }
     }
 
     pub fn lookup(&self, key: &str) -> &[String] {
@@ -30,46 +41,50 @@ impl UserDictionary {
 
     /// `key` は送りありなら `あt` のように子音で終わる。語が辞書の書式で書けなければ何もせずにエラーを返す。
     pub fn register(&mut self, key: &str, word: &str) -> io::Result<()> {
-        let Some(path) = &self.path else {
-            return self.replace(key, word, None);
+        let text = match &mut self.storage {
+            Storage::Memory(text) => {
+                *text = add_entry(text, key, word)?;
+                text.clone()
+            }
+            Storage::File(path) => {
+                let (_lock, latest) = lock_and_read(path)?;
+                let text = add_entry(&latest, key, word)?;
+                write_atomically(path, text.as_bytes())?;
+                text
+            }
         };
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        // ファイル本体は rename で差し替わるので、ロックは別のファイルで取る
-        let lock = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(with_suffix(path, ".lock"))?;
-        lock.lock()?;
-        self.text = read(path)?;
-        let path = path.clone();
-        self.replace(key, word, Some(&path))
-    }
-
-    fn replace(&mut self, key: &str, word: &str, path: Option<&Path>) -> io::Result<()> {
-        let text = rinze_dict::add_entry(&self.text, key, word).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("「{word}」は SKK 辞書の候補として書けない"),
-            )
-        })?;
-        if let Some(path) = path {
-            write_atomically(path, text.as_bytes())?;
-        }
         self.dict = Dictionary::parse(&text);
-        self.text = text;
         Ok(())
     }
 }
 
-fn read(path: &Path) -> io::Result<String> {
+fn add_entry(text: &str, key: &str, word: &str) -> io::Result<String> {
+    rinze_dict::add_entry(text, key, word).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("「{word}」は SKK 辞書の候補として書けない"),
+        )
+    })
+}
+
+fn lock_and_read(path: &Path) -> io::Result<(File, String)> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    // ファイル本体は rename で差し替わるので、ロックは別のファイルで取る
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(with_suffix(path, ".lock"))?;
+    lock.lock()?;
+    let text = read_or_empty(path)?;
+    Ok((lock, text))
+}
+
+fn read_or_empty(path: &Path) -> io::Result<String> {
     match fs::read(path) {
-        Ok(bytes) => Ok(match String::from_utf8(bytes) {
-            Ok(text) => text,
-            Err(e) => encoding_rs::EUC_JP.decode(e.as_bytes()).0.into_owned(),
-        }),
+        Ok(bytes) => Ok(rinze_dict::decode(&bytes).into_owned()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(String::new()),
         Err(e) => Err(e),
     }

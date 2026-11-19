@@ -1,10 +1,11 @@
+use std::convert::Infallible;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use rinze_dict::Dictionary;
-use rinze_zenz::Zenz;
+use rinze_zenz::{Model, Zenz};
 use rinzed::user_dict::UserDictionary;
 use rinzed::{Backend, log};
 
@@ -15,6 +16,9 @@ const USAGE: &str = "使い方: rinzed --model <zenz の gguf> --dict <SKK 辞�
 const SUN_PATH_LEN: usize = 104;
 #[cfg(not(target_os = "macos"))]
 const SUN_PATH_LEN: usize = 108;
+
+const DEFAULT_THREADS_WHEN_UNKNOWN: usize = 4;
+const DEFAULT_THREADS_CAP: usize = 8;
 
 struct Args {
     model: PathBuf,
@@ -53,10 +57,14 @@ fn parse_args() -> Result<Args, String> {
         dict: dict.ok_or("--dict が必要")?,
         socket: socket.map_or_else(default_socket, Ok)?,
         user_dict: user_dict.map_or_else(default_user_dict, Ok)?,
-        threads: threads.unwrap_or_else(|| {
-            std::thread::available_parallelism().map_or(4, |n| n.get().min(8) as i32)
-        }),
+        threads: threads.unwrap_or_else(default_threads),
     })
+}
+
+fn default_threads() -> i32 {
+    std::thread::available_parallelism().map_or(DEFAULT_THREADS_WHEN_UNKNOWN, |n| {
+        n.get().min(DEFAULT_THREADS_CAP)
+    }) as i32
 }
 
 fn home() -> Result<PathBuf, String> {
@@ -126,6 +134,8 @@ fn lock_socket(socket: &Path) -> Result<Option<File>, String> {
     }
 }
 
+struct AnotherRinzedServes;
+
 fn main() -> ExitCode {
     let args = match parse_args() {
         Ok(a) => a,
@@ -135,7 +145,7 @@ fn main() -> ExitCode {
         }
     };
     match start(args) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(AnotherRinzedServes) => ExitCode::SUCCESS,
         Err(e) => {
             log!("rinzed: {e}");
             ExitCode::FAILURE
@@ -143,7 +153,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn start(args: Args) -> Result<(), Box<dyn std::error::Error>> {
+fn start(args: Args) -> Result<AnotherRinzedServes, Box<dyn std::error::Error>> {
     check_socket_path(&args.socket)?;
     if let Some(dir) = args.socket.parent() {
         std::fs::create_dir_all(dir)
@@ -154,7 +164,7 @@ fn start(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             "rinzed: {} は別の rinzed が使っている",
             args.socket.display()
         );
-        return Ok(());
+        return Ok(AnotherRinzedServes);
     };
 
     let dict = Dictionary::from_bytes(
@@ -163,33 +173,37 @@ fn start(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     );
     let user = UserDictionary::open(args.user_dict.clone())
         .map_err(|e| format!("ユーザー辞書 {} を読めない: {e}", args.user_dict.display()))?;
-    let zenz = Zenz::load(&args.model, args.threads)
-        .map_err(|e| format!("モデル {} を読めない: {e}", args.model.display()))?;
-    let backend: &'static Backend = Box::leak(Box::new(Backend::new(dict, user, zenz)));
+    let model_error = |e| format!("モデル {} を読めない: {e}", args.model.display());
+    let model: &'static Model = Box::leak(Box::new(Model::load(&args.model).map_err(model_error)?));
+    let zenz = Zenz::new(model, args.threads).map_err(model_error)?;
+    let backend: &'static Backend<'static> = Box::leak(Box::new(Backend::new(dict, user, zenz)));
 
-    match std::fs::remove_file(&args.socket) {
+    match serve_on(&args.socket, &args.user_dict, backend)? {}
+}
+
+fn serve_on(
+    socket: &Path,
+    user_dict: &Path,
+    backend: &'static Backend<'static>,
+) -> Result<Infallible, Box<dyn std::error::Error>> {
+    match std::fs::remove_file(socket) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-            return Err(format!(
-                "残っていたソケット {} を消せない: {e}",
-                args.socket.display()
-            )
-            .into());
+            return Err(format!("残っていたソケット {} を消せない: {e}", socket.display()).into());
         }
         _ => {}
     }
-    let listener = UnixListener::bind(&args.socket)?;
+    let listener = UnixListener::bind(socket)?;
     log!(
         "rinzed: {} で待ち受け中 (ユーザー辞書 {})",
-        args.socket.display(),
-        args.user_dict.display()
+        socket.display(),
+        user_dict.display()
     );
-    for stream in listener.incoming() {
-        let stream = stream?;
+    loop {
+        let (stream, _) = listener.accept()?;
         std::thread::spawn(move || {
             if let Err(e) = rinzed::serve(stream, backend) {
                 log!("rinzed: 接続を閉じた: {e}");
             }
         });
     }
-    Ok(())
 }

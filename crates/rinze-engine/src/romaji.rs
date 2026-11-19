@@ -93,10 +93,10 @@ impl Romaji {
         out
     }
 
-    pub fn flush(&mut self) -> String {
+    pub fn flush_n_discard_rest(&mut self) -> &'static str {
         let out = if self.pending == "n" { "ん" } else { "" };
         self.pending.clear();
-        out.to_string()
+        out
     }
 
     pub fn backspace(&mut self) -> bool {
@@ -150,7 +150,7 @@ mod tests {
         "hon".chars().for_each(|c| {
             r.feed(c);
         });
-        assert_eq!(r.flush(), "ん");
+        assert_eq!(r.flush_n_discard_rest(), "ん");
     }
 
     #[test]

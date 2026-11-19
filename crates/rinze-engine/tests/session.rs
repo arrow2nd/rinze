@@ -4,7 +4,33 @@ use rinze_engine::{
     CandidatePage, Converter, Key, Okuri, Query, RegistrationLine, Response, Session,
 };
 
-type Recorded = (String, String, Option<(char, String)>);
+#[derive(Debug, PartialEq)]
+struct Recorded {
+    left_context: String,
+    reading: String,
+    okuri: Option<Okuri>,
+}
+
+fn recorded(left_context: &str, reading: &str, okuri: Option<Okuri>) -> Recorded {
+    Recorded {
+        left_context: left_context.to_string(),
+        reading: reading.to_string(),
+        okuri,
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct Registered {
+    midashi: String,
+    word: String,
+}
+
+fn registered(midashi: &str, word: &str) -> Registered {
+    Registered {
+        midashi: midashi.to_string(),
+        word: word.to_string(),
+    }
+}
 
 #[derive(Default)]
 struct Table {
@@ -12,7 +38,7 @@ struct Table {
     generated: HashMap<String, Vec<String>>,
     queries: Vec<Recorded>,
     generations: Vec<Recorded>,
-    registered: Vec<(String, String)>,
+    registered: Vec<Registered>,
 }
 
 fn table(entries: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
@@ -30,11 +56,7 @@ fn midashi(reading: &str, okuri: Option<&Okuri>) -> String {
 }
 
 fn record(q: &Query) -> Recorded {
-    (
-        q.left_context.to_string(),
-        q.reading.to_string(),
-        q.okuri.map(|o| (o.consonant, o.kana.clone())),
-    )
+    recorded(q.left_context, q.reading, q.okuri.cloned())
 }
 
 impl Table {
@@ -66,7 +88,7 @@ impl Converter for Table {
 
     fn register(&mut self, reading: &str, okuri: Option<&Okuri>, word: &str) {
         let key = midashi(reading, okuri);
-        self.registered.push((key.clone(), word.to_string()));
+        self.registered.push(registered(&key, word));
         self.entries
             .entry(key)
             .or_default()
@@ -147,8 +169,11 @@ impl Editor {
     }
 }
 
-fn okuri(c: char, kana: &str) -> Option<(char, String)> {
-    Some((c, kana.to_string()))
+fn okuri(consonant: char, kana: &str) -> Option<Okuri> {
+    Some(Okuri {
+        consonant,
+        kana: kana.to_string(),
+    })
 }
 
 #[test]
@@ -166,7 +191,7 @@ fn 明日会えますか() {
     assert_eq!(ed.preedit(), "");
     assert_eq!(
         ed.table.queries[1],
-        ("明日".to_string(), "あ".to_string(), okuri('e', "え"))
+        recorded("明日", "あ", okuri('e', "え"))
     );
 }
 
@@ -178,7 +203,7 @@ fn マヨネーズを和えます() {
     ]));
     ed.type_keys("Mayone-zu<Space>woAEmasu");
     assert_eq!(ed.buffer, "マヨネーズを和えます");
-    assert_eq!(ed.table.queries[1].0, "マヨネーズを");
+    assert_eq!(ed.table.queries[1].left_context, "マヨネーズを");
 }
 
 #[test]
@@ -196,7 +221,7 @@ fn 促音の送りがなで変換が始まり_候補を送って確定する() {
     assert_eq!(ed.preedit(), "▼会っt");
     assert_eq!(
         ed.table.queries,
-        [("これで".to_string(), "あ".to_string(), okuri('t', "っ"))]
+        [recorded("これで", "あ", okuri('t', "っ"))]
     );
 
     ed.type_keys("<Space>");
@@ -393,7 +418,7 @@ fn 辞書の候補を送り切ると生成した表記に進み_重複は出さ�
     assert_eq!(ed.preedit(), "▼アシタ", "辞書と重複する「明日」は飛ばす");
     assert_eq!(
         ed.table.generations,
-        [("きょうは".to_string(), "あした".to_string(), None)],
+        [recorded("きょうは", "あした", None)],
         "生成にも左文脈を渡す"
     );
     ed.type_keys("<Space>");
@@ -441,7 +466,7 @@ fn 登録した語を元の位置に確定し_次の変換で候補に出る() {
         "入力欄でも変換できる"
     );
     assert_eq!(
-        ed.table.queries[1].0, "これは",
+        ed.table.queries[1].left_context, "これは",
         "入力欄の変換の左文脈は元の位置の左文脈"
     );
     ed.type_keys("Ze<Space>");
@@ -460,10 +485,7 @@ fn 登録した語を元の位置に確定し_次の変換で候補に出る() {
         (ed.buffer.as_str(), ed.preedit(), ed.registration()),
         ("これは林是", "", None)
     );
-    assert_eq!(
-        ed.table.registered,
-        [("りんぜ".to_string(), "林是".to_string())]
-    );
+    assert_eq!(ed.table.registered, [registered("りんぜ", "林是")]);
 
     ed.type_keys("Rinze<Space>");
     assert_eq!(ed.preedit(), "▼林是");
@@ -499,8 +521,8 @@ fn 登録は入れ子にでき_内側をやめると外側の入力欄に戻る(
     assert_eq!(
         ed.table.registered,
         [
-            ("まよ".to_string(), "真夜".to_string()),
-            ("まよねーず".to_string(), "真夜ねーず".to_string())
+            registered("まよ", "真夜"),
+            registered("まよねーず", "真夜ねーず")
         ]
     );
 }
@@ -540,10 +562,7 @@ fn 送りありの語を登録する() {
     );
     assert_eq!(
         ed.table.registered,
-        [
-            ("あe".to_string(), "和".to_string()),
-            ("あw".to_string(), "合".to_string())
-        ]
+        [registered("あe", "和"), registered("あw", "合")]
     );
     ed.type_keys("AE");
     assert_eq!(ed.preedit(), "▼和え");

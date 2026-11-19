@@ -37,12 +37,15 @@ macro_rules! log {
 }
 
 const GENERATE_WIDTH: usize = 8;
-const GENERATE_MARGIN: f64 = 6.0;
+const MAX_LOG_LIKELIHOOD_BELOW_BEST: f64 = 6.0;
+const KANJI_LIKE_KATAKANA: [char; 2] = ['ヵ', 'ヶ'];
+const MSGPACK_RPC_REQUEST: u64 = 0;
+const MSGPACK_RPC_RESPONSE: u64 = 1;
 
-pub struct Backend {
+pub struct Backend<'m> {
     pub dict: Dictionary,
     pub user: Mutex<UserDictionary>,
-    pub zenz: Mutex<Zenz>,
+    pub zenz: Mutex<Zenz<'m>>,
 }
 
 fn midashi(reading: &str, okuri: Option<&Okuri>) -> String {
@@ -95,14 +98,15 @@ pub fn reads_as(surface: &str, reading: &str) -> bool {
 
 fn hiragana(c: char) -> Option<char> {
     match c {
+        c if KANJI_LIKE_KATAKANA.contains(&c) => None,
         'ぁ'..='ゖ' | 'ー' => Some(c),
-        'ァ'..='ヴ' => char::from_u32(c as u32 - 0x60),
+        'ァ'..='ヶ' => char::from_u32(c as u32 - 0x60),
         _ => None,
     }
 }
 
-impl Backend {
-    pub fn new(dict: Dictionary, user: UserDictionary, zenz: Zenz) -> Self {
+impl<'m> Backend<'m> {
+    pub fn new(dict: Dictionary, user: UserDictionary, zenz: Zenz<'m>) -> Self {
         Self {
             dict,
             user: Mutex::new(user),
@@ -110,7 +114,7 @@ impl Backend {
         }
     }
 
-    fn zenz(&self) -> std::sync::MutexGuard<'_, Zenz> {
+    fn zenz(&self) -> std::sync::MutexGuard<'_, Zenz<'m>> {
         self.zenz.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -168,7 +172,7 @@ impl Backend {
         let mut words: Vec<String> = Vec::new();
         for g in generated
             .iter()
-            .filter(|g| g.score >= best - GENERATE_MARGIN)
+            .filter(|g| g.score >= best - MAX_LOG_LIKELIHOOD_BELOW_BEST)
         {
             let Some(stem) = g.text.strip_suffix(okuri) else {
                 continue;
@@ -200,9 +204,9 @@ impl Backend {
     }
 }
 
-struct SharedConverter<'a>(&'a Backend);
+struct SharedConverter<'a, 'm>(&'a Backend<'m>);
 
-impl Converter for SharedConverter<'_> {
+impl Converter for SharedConverter<'_, '_> {
     fn candidates(&mut self, query: &Query) -> Vec<String> {
         self.0.candidates(query)
     }
@@ -217,7 +221,7 @@ impl Converter for SharedConverter<'_> {
 }
 
 /// 1 接続ぶんの要求を、接続が切れるまで順に処理する。
-pub fn serve(stream: UnixStream, backend: &Backend) -> std::io::Result<()> {
+pub fn serve(stream: UnixStream, backend: &Backend<'_>) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = BufWriter::new(stream);
     let mut session = Session::default();
@@ -234,7 +238,7 @@ pub fn serve(stream: UnixStream, backend: &Backend) -> std::io::Result<()> {
         let Some([kind, msgid, method, params]) = message.as_array().map(Vec::as_slice) else {
             continue;
         };
-        if kind.as_u64() != Some(0) {
+        if kind.as_u64() != Some(MSGPACK_RPC_REQUEST) {
             continue;
         }
         let result = dispatch(&mut session, backend, method.as_str().unwrap_or(""), params);
@@ -242,7 +246,12 @@ pub fn serve(stream: UnixStream, backend: &Backend) -> std::io::Result<()> {
             Ok(r) => (Value::Nil, encode_response(&r)),
             Err(e) => (Value::from(e), Value::Nil),
         };
-        let reply = Value::Array(vec![Value::from(1), msgid.clone(), error, result]);
+        let reply = Value::Array(vec![
+            Value::from(MSGPACK_RPC_RESPONSE),
+            msgid.clone(),
+            error,
+            result,
+        ]);
         rmpv::encode::write_value(&mut writer, &reply).map_err(std::io::Error::other)?;
         writer.flush()?;
     }
@@ -250,7 +259,7 @@ pub fn serve(stream: UnixStream, backend: &Backend) -> std::io::Result<()> {
 
 fn dispatch(
     session: &mut Session,
-    backend: &Backend,
+    backend: &Backend<'_>,
     method: &str,
     params: &Value,
 ) -> Result<Response, String> {
@@ -325,7 +334,7 @@ mod tests {
     #[test]
     fn 送りありは読みと子音で引く() {
         let dict = Dictionary::parse("あt /合/会/\nあ /亜/\n");
-        let user = UserDictionary::default();
+        let user = UserDictionary::in_memory();
         let okuri = Okuri {
             consonant: 't',
             kana: "っ".into(),
@@ -344,7 +353,7 @@ mod tests {
     #[test]
     fn ユーザー辞書の語とシステム辞書の語を重複なく合わせる() {
         let dict = Dictionary::parse("あt /合/会/\n");
-        let mut user = UserDictionary::default();
+        let mut user = UserDictionary::in_memory();
         user.register("あt", "会").unwrap();
         user.register("あt", "遭").unwrap();
         let okuri = Okuri {

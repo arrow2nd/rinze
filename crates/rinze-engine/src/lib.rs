@@ -87,34 +87,69 @@ pub struct CandidatePage {
 
 #[derive(Debug, Default)]
 pub struct Session {
-    roman: Romaji,
     phase: Phase,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 enum Phase {
-    #[default]
-    Direct,
-    Midashi { kana: String },
-    Okuri { kana: String, consonant: char },
-    Henkan(Conversion),
-    Register(Box<Registration>),
+    Direct {
+        roman: Romaji,
+    },
+    Midashi {
+        kana: String,
+        roman: Romaji,
+    },
+    Okuri {
+        kana: String,
+        consonant: char,
+        roman: Romaji,
+    },
+    Henkan {
+        conv: Conversion,
+        trailing_roman: Romaji,
+    },
+    Register {
+        reg: Box<Registration>,
+        trailing_roman: Romaji,
+    },
+}
+
+impl Default for Phase {
+    fn default() -> Self {
+        Phase::Direct {
+            roman: Romaji::default(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Reading {
+    kana: String,
+    okuri: Option<Okuri>,
 }
 
 #[derive(Debug)]
 struct Conversion {
-    reading: String,
-    okuri: Option<Okuri>,
-    candidates: Vec<String>,
+    reading: Reading,
+    candidates: Candidates,
     generated: bool,
     cursor: Cursor,
 }
 
 #[derive(Debug)]
+struct Candidates(Vec<String>);
+
+#[derive(Debug)]
 struct Registration {
-    conv: Conversion,
+    origin: Origin,
     text: String,
     inner: Session,
+}
+
+#[derive(Debug)]
+enum Origin {
+    Candidates(Conversion),
+    NoCandidates(Reading),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,16 +189,12 @@ impl Session {
     /// 入力途中のものを表示どおりに確定し、状態を空にする。フロントエンドが入力先を離れるときに使う。
     pub fn flush(&mut self) -> Response {
         let commit = match mem::take(&mut self.phase) {
-            Phase::Direct => self.roman.flush(),
-            Phase::Midashi { kana } => kana + &self.roman.flush(),
+            Phase::Direct { mut roman } => roman.flush_n_discard_rest().to_string(),
+            Phase::Midashi { kana, mut roman } => kana + roman.flush_n_discard_rest(),
             Phase::Okuri { kana, .. } => kana,
-            Phase::Henkan(conv) => match conv.cursor {
-                Cursor::Inline(i) => conv.surface(&conv.candidates[i]),
-                Cursor::Page(_) => conv.surface(&conv.reading),
-            },
-            Phase::Register(reg) => reg.conv.surface(&reg.conv.reading),
+            Phase::Henkan { conv, .. } => conv.displayed(),
+            Phase::Register { reg, .. } => reg.reading().kana_surface(),
         };
-        self.roman.clear();
         Response {
             handled: true,
             commit,
@@ -173,189 +204,260 @@ impl Session {
 
     fn step(&mut self, key: Key, step: &mut Step) -> bool {
         match mem::take(&mut self.phase) {
-            Phase::Direct => self.direct(key, step),
-            Phase::Midashi { kana } => self.midashi(kana, key, step),
-            Phase::Okuri { kana, consonant } => self.okuri(kana, consonant, key, step),
-            Phase::Henkan(conv) => self.henkan(conv, key, step),
-            Phase::Register(reg) => self.register(reg, key, step),
+            Phase::Direct { roman } => self.direct(roman, key, step),
+            Phase::Midashi { kana, roman } => self.midashi(kana, roman, key, step),
+            Phase::Okuri {
+                kana,
+                consonant,
+                roman,
+            } => self.okuri(kana, consonant, roman, key, step),
+            Phase::Henkan {
+                conv,
+                trailing_roman,
+            } => self.henkan(conv, trailing_roman, key, step),
+            Phase::Register {
+                reg,
+                trailing_roman,
+            } => self.register(reg, trailing_roman, key, step),
         }
     }
 
-    fn direct(&mut self, key: Key, step: &mut Step) -> bool {
-        match key {
+    fn direct(&mut self, mut roman: Romaji, key: Key, step: &mut Step) -> bool {
+        let handled = match key {
             Key::Char(c) if c.is_ascii_uppercase() => {
-                step.commit.push_str(&self.roman.flush());
-                self.midashi(String::new(), Key::Char(c.to_ascii_lowercase()), step)
+                step.commit.push_str(roman.flush_n_discard_rest());
+                return self.midashi(
+                    String::new(),
+                    Romaji::default(),
+                    Key::Char(c.to_ascii_lowercase()),
+                    step,
+                );
             }
             Key::Char(c) => {
-                step.commit.push_str(&self.roman.feed(c));
+                step.commit.push_str(&roman.feed(c));
                 true
             }
             Key::Space | Key::Enter => {
-                step.commit.push_str(&self.roman.flush());
+                step.commit.push_str(roman.flush_n_discard_rest());
                 false
             }
-            Key::Backspace => self.roman.backspace(),
+            Key::Backspace => roman.backspace(),
             Key::Cancel => {
-                let had_pending = !self.roman.is_empty();
-                self.roman.clear();
+                let had_pending = !roman.is_empty();
+                roman.clear();
                 had_pending
             }
-        }
+        };
+        self.phase = Phase::Direct { roman };
+        handled
     }
 
-    fn midashi(&mut self, mut kana: String, key: Key, step: &mut Step) -> bool {
+    fn midashi(&mut self, mut kana: String, mut roman: Romaji, key: Key, step: &mut Step) -> bool {
         match key {
             Key::Char(c) if c.is_ascii_uppercase() && !kana.is_empty() => {
-                kana.push_str(&self.roman.flush());
+                kana.push_str(roman.flush_n_discard_rest());
                 let consonant = c.to_ascii_lowercase();
-                return self.okuri(kana, consonant, Key::Char(consonant), step);
+                return self.okuri(
+                    kana,
+                    consonant,
+                    Romaji::default(),
+                    Key::Char(consonant),
+                    step,
+                );
             }
-            Key::Char(c) => kana.push_str(&self.roman.feed(c.to_ascii_lowercase())),
+            Key::Char(c) => kana.push_str(&roman.feed(c.to_ascii_lowercase())),
             Key::Space => {
-                kana.push_str(&self.roman.flush());
+                kana.push_str(roman.flush_n_discard_rest());
                 if !kana.is_empty() {
-                    self.convert(kana, None, step);
+                    let reading = Reading { kana, okuri: None };
+                    self.convert(reading, Romaji::default(), step);
                     return true;
                 }
             }
             Key::Enter => {
-                kana.push_str(&self.roman.flush());
+                kana.push_str(roman.flush_n_discard_rest());
                 step.commit.push_str(&kana);
                 return true;
             }
             Key::Backspace => {
-                if !self.roman.backspace() && kana.pop().is_none() {
+                if !roman.backspace() && kana.pop().is_none() {
                     return true;
                 }
             }
-            Key::Cancel => {
-                self.roman.clear();
-                return true;
-            }
+            Key::Cancel => return true,
         }
-        self.phase = Phase::Midashi { kana };
+        self.phase = Phase::Midashi { kana, roman };
         true
     }
 
-    fn okuri(&mut self, kana: String, consonant: char, key: Key, step: &mut Step) -> bool {
+    fn okuri(
+        &mut self,
+        kana: String,
+        consonant: char,
+        mut roman: Romaji,
+        key: Key,
+        step: &mut Step,
+    ) -> bool {
         match key {
             Key::Char(c) => {
-                let okuri = self.roman.feed(c.to_ascii_lowercase());
+                let okuri = roman.feed(c.to_ascii_lowercase());
                 if okuri.is_empty() {
-                    self.phase = Phase::Okuri { kana, consonant };
-                } else {
-                    self.convert(
+                    self.phase = Phase::Okuri {
                         kana,
-                        Some(Okuri {
+                        consonant,
+                        roman,
+                    };
+                } else {
+                    let reading = Reading {
+                        kana,
+                        okuri: Some(Okuri {
                             consonant,
                             kana: okuri,
                         }),
-                        step,
-                    );
+                    };
+                    self.convert(reading, roman, step);
                 }
             }
-            Key::Space => self.phase = Phase::Okuri { kana, consonant },
-            Key::Enter => {
-                self.roman.clear();
-                step.commit.push_str(&kana);
+            Key::Space => {
+                self.phase = Phase::Okuri {
+                    kana,
+                    consonant,
+                    roman,
+                }
             }
+            Key::Enter => step.commit.push_str(&kana),
             Key::Backspace => {
-                self.roman.clear();
-                self.phase = Phase::Midashi { kana };
+                self.phase = Phase::Midashi {
+                    kana,
+                    roman: Romaji::default(),
+                }
             }
-            Key::Cancel => self.roman.clear(),
+            Key::Cancel => {}
         }
         true
     }
 
-    fn convert(&mut self, reading: String, okuri: Option<Okuri>, step: &mut Step) {
-        let mut conv = Conversion {
-            reading,
-            okuri,
-            candidates: Vec::new(),
-            generated: false,
-            cursor: Cursor::Inline(0),
-        };
-        let left_context = step.left_context();
-        conv.candidates = step.converter.candidates(&conv.query(&left_context));
-        if conv.candidates.is_empty() {
-            conv.generate(step);
+    fn convert(&mut self, reading: Reading, trailing_roman: Romaji, step: &mut Step) {
+        let left_context = step.left_context_with_commit();
+        let query = reading.query(&left_context);
+        let mut words = step.converter.candidates(&query);
+        let generated = words.is_empty();
+        if generated {
+            push_unique(&mut words, step.converter.generate(&query));
         }
-        self.phase = if conv.candidates.is_empty() {
-            Phase::Register(Box::new(Registration::new(conv)))
-        } else {
-            Phase::Henkan(conv)
+        self.phase = match Candidates::new(words) {
+            Some(candidates) => Phase::Henkan {
+                conv: Conversion {
+                    reading,
+                    candidates,
+                    generated,
+                    cursor: Cursor::Inline(0),
+                },
+                trailing_roman,
+            },
+            None => Phase::Register {
+                reg: Box::new(Registration::new(Origin::NoCandidates(reading))),
+                trailing_roman,
+            },
         };
     }
 
-    fn henkan(&mut self, mut conv: Conversion, key: Key, step: &mut Step) -> bool {
+    fn henkan(
+        &mut self,
+        mut conv: Conversion,
+        trailing_roman: Romaji,
+        key: Key,
+        step: &mut Step,
+    ) -> bool {
         match (key, conv.cursor) {
             (Key::Space, _) => {
-                if !conv.next() {
-                    let shown = conv.shown();
-                    if conv.generated || !conv.generate(step) {
-                        self.phase = Phase::Register(Box::new(Registration::new(conv)));
-                        return true;
-                    }
-                    if conv.shown() == shown {
-                        conv.next();
-                    }
+                if !conv.next() && !conv.advance_to_generated(step) {
+                    self.phase = Phase::Register {
+                        reg: Box::new(Registration::new(Origin::Candidates(conv))),
+                        trailing_roman,
+                    };
+                    return true;
                 }
             }
             (Key::Char('x'), _) | (Key::Backspace, Cursor::Page(_)) => {
                 if !conv.prev() {
-                    self.roman.clear();
-                    self.phase = Phase::Midashi { kana: conv.reading };
+                    self.phase = Phase::Midashi {
+                        kana: conv.reading.kana,
+                        roman: Romaji::default(),
+                    };
                     return true;
                 }
             }
             (Key::Cancel, _) => {
-                self.roman.clear();
-                self.phase = Phase::Midashi { kana: conv.reading };
+                self.phase = Phase::Midashi {
+                    kana: conv.reading.kana,
+                    roman: Romaji::default(),
+                };
                 return true;
             }
             (Key::Char(c), Cursor::Page(page)) => {
                 if let Some(word) = conv.page_item(page, c) {
                     step.commit.push_str(&word);
+                    self.phase = Phase::Direct {
+                        roman: trailing_roman,
+                    };
                     return true;
                 }
             }
             (_, Cursor::Page(_)) => {}
-            (Key::Enter, Cursor::Inline(i)) => {
-                step.commit.push_str(&conv.surface(&conv.candidates[i]));
+            (Key::Enter, Cursor::Inline(_)) => {
+                step.commit.push_str(&conv.displayed());
+                self.phase = Phase::Direct {
+                    roman: trailing_roman,
+                };
                 return true;
             }
-            (Key::Backspace, Cursor::Inline(i)) => {
-                let mut word = conv.surface(&conv.candidates[i]);
+            (Key::Backspace, Cursor::Inline(_)) => {
+                let mut word = conv.displayed();
                 word.pop();
                 step.commit.push_str(&word);
+                self.phase = Phase::Direct {
+                    roman: trailing_roman,
+                };
                 return true;
             }
-            (Key::Char(_), Cursor::Inline(i)) => {
-                step.commit.push_str(&conv.surface(&conv.candidates[i]));
-                return self.direct(key, step);
+            (Key::Char(_), Cursor::Inline(_)) => {
+                step.commit.push_str(&conv.displayed());
+                return self.direct(trailing_roman, key, step);
             }
         }
-        self.phase = Phase::Henkan(conv);
+        self.phase = Phase::Henkan {
+            conv,
+            trailing_roman,
+        };
         true
     }
 
-    fn register(&mut self, mut reg: Box<Registration>, key: Key, step: &mut Step) -> bool {
-        let left_context = format!("{}{}", step.left_context(), reg.text);
+    fn register(
+        &mut self,
+        mut reg: Box<Registration>,
+        trailing_roman: Romaji,
+        key: Key,
+        step: &mut Step,
+    ) -> bool {
+        let left_context = reg.field_left_context(&step.left_context_with_commit());
         let res = reg.inner.handle(key, &left_context, &mut *step.converter);
         reg.text.push_str(&res.commit);
         if !res.handled {
             match key {
                 Key::Enter if !reg.text.is_empty() => {
-                    let word = reg.word();
+                    let word = reg.word_without_okuri();
+                    let reading = reg.reading();
                     step.converter
-                        .register(&reg.conv.reading, reg.conv.okuri.as_ref(), word);
-                    step.commit.push_str(&reg.conv.surface(word));
+                        .register(&reading.kana, reading.okuri.as_ref(), word);
+                    step.commit.push_str(&reading.surface(word));
+                    self.phase = Phase::Direct {
+                        roman: trailing_roman,
+                    };
                     return true;
                 }
                 Key::Enter | Key::Cancel => {
-                    self.phase = reg.cancel();
+                    self.phase = reg.cancel(trailing_roman);
                     return true;
                 }
                 Key::Backspace => {
@@ -365,38 +467,37 @@ impl Session {
                 Key::Char(c) => reg.text.push(c),
             }
         }
-        self.phase = Phase::Register(reg);
+        self.phase = Phase::Register {
+            reg,
+            trailing_roman,
+        };
         true
     }
 
     fn preedit(&self) -> String {
-        let roman = self.roman.pending();
         match &self.phase {
-            Phase::Direct => roman.to_string(),
-            Phase::Midashi { kana } => format!("▽{kana}{roman}"),
-            Phase::Okuri { kana, .. } => format!("▽{kana}*{roman}"),
-            Phase::Henkan(conv) => match conv.cursor {
-                Cursor::Inline(i) => format!("▼{}{roman}", conv.surface(&conv.candidates[i])),
-                Cursor::Page(_) => format!("▼{}{roman}", conv.surface(&conv.reading)),
-            },
-            Phase::Register(reg) => format!("▼{}", reg.conv.surface(&reg.conv.reading)),
+            Phase::Direct { roman } => roman.pending().to_string(),
+            Phase::Midashi { kana, roman } => format!("▽{kana}{}", roman.pending()),
+            Phase::Okuri { kana, roman, .. } => format!("▽{kana}*{}", roman.pending()),
+            Phase::Henkan {
+                conv,
+                trailing_roman,
+            } => format!("▼{}{}", conv.displayed(), trailing_roman.pending()),
+            Phase::Register { reg, .. } => format!("▼{}", reg.reading().kana_surface()),
         }
     }
 
     fn registration_line(&self, depth: usize) -> Option<RegistrationLine> {
-        let Phase::Register(reg) = &self.phase else {
+        let Phase::Register { reg, .. } = &self.phase else {
             return None;
         };
         reg.inner.registration_line(depth + 1).or_else(|| {
-            let midashi = match &reg.conv.okuri {
-                Some(okuri) => format!("{}*{}", reg.conv.reading, okuri.kana),
-                None => reg.conv.reading.clone(),
-            };
             Some(RegistrationLine {
                 prompt: format!(
-                    "{}辞書登録{} {midashi}: ",
+                    "{}辞書登録{} {}: ",
                     "[".repeat(depth),
-                    "]".repeat(depth)
+                    "]".repeat(depth),
+                    reg.reading().midashi()
                 ),
                 text: reg.text.clone(),
                 preedit: reg.inner.preedit(),
@@ -406,8 +507,8 @@ impl Session {
 
     fn page(&self) -> Option<CandidatePage> {
         let conv = match &self.phase {
-            Phase::Henkan(conv) => conv,
-            Phase::Register(reg) => return reg.inner.page(),
+            Phase::Henkan { conv, .. } => conv,
+            Phase::Register { reg, .. } => return reg.inner.page(),
             _ => return None,
         };
         let Cursor::Page(page) = conv.cursor else {
@@ -417,7 +518,7 @@ impl Session {
             .page_words(page)
             .iter()
             .zip(PAGE_LABELS)
-            .map(|(word, label)| (label, conv.surface(word)))
+            .map(|(word, label)| (label, conv.reading.surface(word)))
             .collect();
         Some(CandidatePage {
             items,
@@ -428,22 +529,58 @@ impl Session {
 }
 
 impl Step<'_> {
-    fn left_context(&self) -> String {
+    fn left_context_with_commit(&self) -> String {
         format!("{}{}", self.left_context, self.commit)
     }
 }
 
+impl Reading {
+    fn query<'a>(&'a self, left_context: &'a str) -> Query<'a> {
+        Query {
+            left_context,
+            reading: &self.kana,
+            okuri: self.okuri.as_ref(),
+        }
+    }
+
+    fn surface(&self, word: &str) -> String {
+        format!("{word}{}", self.okuri.as_ref().map_or("", |o| &o.kana))
+    }
+
+    fn kana_surface(&self) -> String {
+        self.surface(&self.kana)
+    }
+
+    fn midashi(&self) -> String {
+        match &self.okuri {
+            Some(okuri) => format!("{}*{}", self.kana, okuri.kana),
+            None => self.kana.clone(),
+        }
+    }
+}
+
 impl Registration {
-    fn new(conv: Conversion) -> Self {
+    fn new(origin: Origin) -> Self {
         Self {
-            conv,
+            origin,
             text: String::new(),
             inner: Session::default(),
         }
     }
 
-    fn word(&self) -> &str {
-        self.conv
+    fn reading(&self) -> &Reading {
+        match &self.origin {
+            Origin::Candidates(conv) => &conv.reading,
+            Origin::NoCandidates(reading) => reading,
+        }
+    }
+
+    fn field_left_context(&self, outer_left_context: &str) -> String {
+        format!("{outer_left_context}{}", self.text)
+    }
+
+    fn word_without_okuri(&self) -> &str {
+        self.reading()
             .okuri
             .as_ref()
             .and_then(|o| self.text.strip_suffix(o.kana.as_str()))
@@ -451,37 +588,72 @@ impl Registration {
             .unwrap_or(&self.text)
     }
 
-    fn cancel(self) -> Phase {
-        if self.conv.candidates.is_empty() {
-            Phase::Midashi {
-                kana: self.conv.surface(&self.conv.reading),
-            }
-        } else {
-            Phase::Henkan(self.conv)
+    fn cancel(self, trailing_roman: Romaji) -> Phase {
+        match self.origin {
+            Origin::Candidates(conv) => Phase::Henkan {
+                conv,
+                trailing_roman,
+            },
+            Origin::NoCandidates(reading) => Phase::Midashi {
+                kana: reading.kana_surface(),
+                roman: trailing_roman,
+            },
         }
     }
 }
 
+impl Candidates {
+    fn new(words: Vec<String>) -> Option<Self> {
+        (!words.is_empty()).then_some(Self(words))
+    }
+
+    fn extend_unique(&mut self, words: Vec<String>) -> bool {
+        push_unique(&mut self.0, words)
+    }
+}
+
+impl std::ops::Deref for Candidates {
+    type Target = [String];
+
+    fn deref(&self) -> &[String] {
+        &self.0
+    }
+}
+
+fn push_unique(list: &mut Vec<String>, words: Vec<String>) -> bool {
+    let before = list.len();
+    for word in words {
+        if !list.contains(&word) {
+            list.push(word);
+        }
+    }
+    list.len() > before
+}
+
 impl Conversion {
-    fn query<'a>(&'a self, left_context: &'a str) -> Query<'a> {
-        Query {
-            left_context,
-            reading: &self.reading,
-            okuri: self.okuri.as_ref(),
+    fn displayed(&self) -> String {
+        match self.cursor {
+            Cursor::Inline(i) => self.reading.surface(&self.candidates[i]),
+            Cursor::Page(_) => self.reading.kana_surface(),
         }
     }
 
-    fn generate(&mut self, step: &mut Step) -> bool {
-        self.generated = true;
-        let left_context = step.left_context();
-        let words = step.converter.generate(&self.query(&left_context));
-        let before = self.candidates.len();
-        for word in words {
-            if !self.candidates.contains(&word) {
-                self.candidates.push(word);
-            }
+    fn advance_to_generated(&mut self, step: &mut Step) -> bool {
+        if self.generated {
+            return false;
         }
-        self.candidates.len() > before
+        self.generated = true;
+        let shown_before = self.shown();
+        let left_context = step.left_context_with_commit();
+        let words = step.converter.generate(&self.reading.query(&left_context));
+        if !self.candidates.extend_unique(words) {
+            return false;
+        }
+        let added_to_current_page = self.shown() > shown_before;
+        if !added_to_current_page {
+            self.next();
+        }
+        true
     }
 
     fn shown(&self) -> usize {
@@ -489,10 +661,6 @@ impl Conversion {
             Cursor::Inline(_) => 1,
             Cursor::Page(page) => self.page_words(page).len(),
         }
-    }
-
-    fn surface(&self, word: &str) -> String {
-        format!("{word}{}", self.okuri.as_ref().map_or("", |o| &o.kana))
     }
 
     fn pages(&self) -> usize {
@@ -510,7 +678,9 @@ impl Conversion {
 
     fn page_item(&self, page: usize, label: char) -> Option<String> {
         let index = PAGE_LABELS.iter().position(|&l| l == label)?;
-        self.page_words(page).get(index).map(|w| self.surface(w))
+        self.page_words(page)
+            .get(index)
+            .map(|w| self.reading.surface(w))
     }
 
     fn next(&mut self) -> bool {

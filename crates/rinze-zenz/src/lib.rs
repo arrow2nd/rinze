@@ -28,15 +28,20 @@ const TAG_CONTEXT: char = '\u{EE02}';
 const LEFT_CONTEXT_CHARS: usize = 40;
 const N_CTX: u32 = 1024;
 const N_SEQ_MAX: u32 = 64;
+const MAX_TOKENS_BEYOND_READING: usize = 4;
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
-pub struct Zenz {
-    _backend: LlamaBackend,
-    model: &'static LlamaModel,
-    ctx: LlamaContext<'static>,
-    batch: LlamaBatch<'static>,
+pub struct Model {
+    llama: LlamaModel,
+    backend: LlamaBackend,
     stops: Vec<bool>,
+}
+
+pub struct Zenz<'m> {
+    model: &'m Model,
+    ctx: LlamaContext<'m>,
+    batch: LlamaBatch<'static>,
 }
 
 /// 生成した表記と、その対数尤度。
@@ -50,12 +55,12 @@ struct Beam {
     tokens: Vec<LlamaToken>,
     score: f64,
     seq: i32,
-    logits: i32,
+    batch_index: i32,
 }
 
-impl Zenz {
-    /// llama.cpp のバックエンドは 1 プロセスで 1 度しか初期化できないので、`Zenz` も 1 プロセスに 1 つだけ作れる。
-    pub fn load(model_path: &Path, threads: i32) -> Result<Self> {
+impl Model {
+    /// llama.cpp のバックエンドは 1 プロセスで 1 度しか初期化できないので、`Model` も 1 プロセスに 1 つだけ作れる。
+    pub fn load(model_path: &Path) -> Result<Self> {
         let mut backend = LlamaBackend::init()?;
         backend.void_logs();
 
@@ -70,22 +75,9 @@ impl Zenz {
             &CString::new("tokenizer.ggml.pre")?,
             ParamOverrideValue::Str(value),
         );
-        let model: &'static LlamaModel = Box::leak(Box::new(LlamaModel::load_from_file(
-            &backend, model_path, &params,
-        )?));
+        let llama = LlamaModel::load_from_file(&backend, model_path, &params)?;
 
-        let cparams = LlamaContextParams::default()
-            .with_n_ctx(NonZeroU32::new(N_CTX))
-            .with_n_batch(N_CTX)
-            .with_n_ubatch(512)
-            .with_n_seq_max(N_SEQ_MAX)
-            .with_n_threads(threads)
-            .with_n_threads_batch(threads)
-            .with_kv_unified(true)
-            .with_flash_attention_policy(0)
-            .with_no_perf(true);
-        let ctx = model.new_context(&backend, cparams)?;
-        let vocab = model.vocab();
+        let vocab = llama.vocab();
         // zenz-v3.2 は出力のあとに EOS を出さず、次のタグ (U+EE00 台の私用文字) を生成し続ける。
         // UTF-8 で 0xEE は U+E000..=U+EFFF の先頭バイトにしか現れないので、それを含むトークンで打ち切る
         let stops = vocab
@@ -97,11 +89,29 @@ impl Zenz {
             })
             .collect();
         Ok(Self {
-            _backend: backend,
-            model,
-            ctx,
-            batch: LlamaBatch::new(N_CTX as usize, 1),
+            llama,
+            backend,
             stops,
+        })
+    }
+}
+
+impl<'m> Zenz<'m> {
+    pub fn new(model: &'m Model, threads: i32) -> Result<Self> {
+        let cparams = LlamaContextParams::default()
+            .with_n_ctx(NonZeroU32::new(N_CTX))
+            .with_n_batch(N_CTX)
+            .with_n_ubatch(512)
+            .with_n_seq_max(N_SEQ_MAX)
+            .with_n_threads(threads)
+            .with_n_threads_batch(threads)
+            .with_kv_unified(true)
+            .with_flash_attention_policy(0)
+            .with_no_perf(true);
+        Ok(Self {
+            model,
+            ctx: model.llama.new_context(&model.backend, cparams)?,
+            batch: LlamaBatch::new(N_CTX as usize, 1),
         })
     }
 
@@ -124,7 +134,7 @@ impl Zenz {
             self.batch.add(t, i as i32, &[0], i + 1 == prompt.len())?;
         }
         self.ctx.decode(&mut self.batch)?;
-        let first = self.ctx.get_logits_ith(self.batch.n_tokens() - 1).to_vec();
+        let prompt_logits = self.ctx.get_logits_ith(self.batch.n_tokens() - 1).to_vec();
 
         let mut scores = Vec::with_capacity(cands.len());
         for group in cands.chunks((N_SEQ_MAX - 1) as usize) {
@@ -132,33 +142,43 @@ impl Zenz {
                 self.ctx.clear_kv_cache_seq(Some(s as u32), None, None)?;
                 self.ctx.copy_kv_cache_seq(0, s, Some(0), Some(p as u32))?;
             }
-            self.batch.clear();
-            let mut positions: Vec<Vec<i32>> = Vec::with_capacity(group.len());
-            for (g, toks) in group.iter().enumerate() {
-                let seq = g as i32 + 1;
-                let mut v = Vec::new();
-                for (k, &t) in toks.iter().enumerate() {
-                    v.push(self.batch.n_tokens());
-                    self.batch.add(t, p + k as i32, &[seq], true)?;
-                }
-                positions.push(v);
-            }
+            let batch_indices = self.add_candidates_like_spike(group, p)?;
             if self.batch.n_tokens() > 0 {
                 self.ctx.decode(&mut self.batch)?;
             }
-            for (toks, idx) in group.iter().zip(&positions) {
+            for (toks, indices) in group.iter().zip(&batch_indices) {
                 let Some(&head) = toks.first() else {
                     scores.push(0.0);
                     continue;
                 };
-                let mut sum = log_prob(&first, head);
-                for (&bi, &next) in idx.iter().zip(&toks[1..]) {
+                let predicting_next = &indices[..indices.len() - 1];
+                let mut sum = log_prob(&prompt_logits, head);
+                for (&bi, &next) in predicting_next.iter().zip(&toks[1..]) {
                     sum += log_prob(self.ctx.get_logits_ith(bi), next);
                 }
                 scores.push(sum);
             }
         }
         Ok(scores)
+    }
+
+    fn add_candidates_like_spike(
+        &mut self,
+        group: &[Vec<LlamaToken>],
+        prompt_len: i32,
+    ) -> Result<Vec<Vec<i32>>> {
+        self.batch.clear();
+        let mut batch_indices = Vec::with_capacity(group.len());
+        for (g, toks) in group.iter().enumerate() {
+            let seq = g as i32 + 1;
+            let mut indices = Vec::with_capacity(toks.len());
+            for (k, &t) in toks.iter().enumerate() {
+                indices.push(self.batch.n_tokens());
+                self.batch.add(t, prompt_len + k as i32, &[seq], true)?;
+            }
+            batch_indices.push(indices);
+        }
+        Ok(batch_indices)
     }
 
     /// `reading` (ひらがな、送りがなを含む) の表記を、対数尤度の高い順に最大 `width` 件生成する。
@@ -172,7 +192,7 @@ impl Zenz {
         let width = width.clamp(1, (N_SEQ_MAX as usize - 1) / 2);
         let prompt = self.tokenize(&build_prompt(left_context, reading), true);
         let p = prompt.len() as i32;
-        let max_tokens = reading.chars().count() + 4;
+        let max_tokens = reading.chars().count() + MAX_TOKENS_BEYOND_READING;
 
         self.ctx.clear_kv_cache();
         self.batch.clear();
@@ -184,18 +204,18 @@ impl Zenz {
             tokens: Vec::new(),
             score: 0.0,
             seq: 0,
-            logits: self.batch.n_tokens() - 1,
+            batch_index: self.batch.n_tokens() - 1,
         }];
         let mut done: Vec<(Vec<LlamaToken>, f64)> = Vec::new();
 
         for step in 0..=max_tokens {
             let mut next: Vec<(usize, LlamaToken, f64)> = Vec::new();
             for (b, beam) in alive.iter().enumerate() {
-                let logits = self.ctx.get_logits_ith(beam.logits);
+                let logits = self.ctx.get_logits_ith(beam.batch_index);
                 let lse = log_sum_exp(logits);
                 for (token, logit) in top_k(logits, width) {
                     let score = beam.score + logit as f64 - lse;
-                    if self.stops[token.0 as usize] {
+                    if self.model.stops[token.0 as usize] {
                         if !beam.tokens.is_empty() {
                             done.push((beam.tokens.clone(), score));
                         }
@@ -208,20 +228,16 @@ impl Zenz {
             done.truncate(width);
             next.sort_by(|a, b| b.2.total_cmp(&a.2));
             next.truncate(width);
-            if done.len() == width {
-                let worst = done[width - 1].1;
-                next.retain(|c| c.2 > worst);
-            }
+            prune_below_worst_done(&mut next, &done, width);
             if next.is_empty() {
                 break;
             }
 
-            let base = 1 + (step % 2) as i32 * width as i32;
             self.batch.clear();
             let mut grown = Vec::with_capacity(next.len());
-            for (j, &(b, token, score)) in next.iter().enumerate() {
+            for (slot, &(b, token, score)) in next.iter().enumerate() {
                 let parent = &alive[b];
-                let seq = base + j as i32;
+                let seq = child_seq(step, slot, width);
                 self.ctx.clear_kv_cache_seq(Some(seq as u32), None, None)?;
                 self.ctx.copy_kv_cache_seq(parent.seq, seq, None, None)?;
                 self.batch
@@ -232,7 +248,7 @@ impl Zenz {
                     tokens,
                     score,
                     seq,
-                    logits: self.batch.n_tokens() - 1,
+                    batch_index: self.batch.n_tokens() - 1,
                 });
             }
             for beam in alive.iter().filter(|b| b.seq != 0) {
@@ -243,7 +259,7 @@ impl Zenz {
             alive = grown;
         }
 
-        let vocab = self.model.vocab();
+        let vocab = self.model.llama.vocab();
         Ok(done
             .into_iter()
             .filter_map(|(tokens, score)| {
@@ -251,16 +267,42 @@ impl Zenz {
                     .iter()
                     .flat_map(|&t| vocab.token_to_piece(t, false, None))
                     .collect();
-                let text = String::from_utf8(bytes).ok()?.replace('　', " ");
+                let text = from_model_text(&String::from_utf8(bytes).ok()?);
                 Some(Generated { text, score })
             })
             .collect())
     }
 
     fn tokenize(&self, text: &str, add_bos: bool) -> Vec<LlamaToken> {
-        let text = text.replace(' ', "　").replace('\n', "");
-        self.model.vocab().tokenize(text.as_bytes(), add_bos, false)
+        self.model
+            .llama
+            .vocab()
+            .tokenize(to_model_text(text).as_bytes(), add_bos, false)
     }
+}
+
+fn to_model_text(text: &str) -> String {
+    text.replace(' ', "　").replace('\n', "")
+}
+
+fn from_model_text(text: &str) -> String {
+    text.replace('　', " ")
+}
+
+fn prune_below_worst_done(
+    next: &mut Vec<(usize, LlamaToken, f64)>,
+    done: &[(Vec<LlamaToken>, f64)],
+    width: usize,
+) {
+    if done.len() == width {
+        let worst = done[width - 1].1;
+        next.retain(|c| c.2 > worst);
+    }
+}
+
+fn child_seq(step: usize, slot: usize, width: usize) -> i32 {
+    let bank_not_held_by_parents = step % 2;
+    (1 + bank_not_held_by_parents * width + slot) as i32
 }
 
 fn log_prob(logits: &[f32], target: LlamaToken) -> f64 {

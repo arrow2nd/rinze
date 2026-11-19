@@ -1,5 +1,6 @@
 //! SKK 辞書。見出し (送りありなら `あt` のように読みと送りがなの子音) から候補を引く。
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 #[derive(Debug, Default)]
@@ -7,13 +8,17 @@ pub struct Dictionary {
     entries: HashMap<String, Vec<String>>,
 }
 
+/// UTF-8 として読めなければ EUC-JP として読む。SKK-JISYO.L などの配布物は EUC-JP。
+pub fn decode(bytes: &[u8]) -> Cow<'_, str> {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => Cow::Borrowed(text),
+        Err(_) => encoding_rs::EUC_JP.decode(bytes).0,
+    }
+}
+
 impl Dictionary {
-    /// UTF-8 として読めなければ EUC-JP として読む。SKK-JISYO.L などの配布物は EUC-JP。
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        match std::str::from_utf8(bytes) {
-            Ok(text) => Self::parse(text),
-            Err(_) => Self::parse(&encoding_rs::EUC_JP.decode(bytes).0),
-        }
+        Self::parse(&decode(bytes))
     }
 
     pub fn parse(text: &str) -> Self {
