@@ -69,6 +69,11 @@ impl Romaji {
         self.pending.is_empty()
     }
 
+    pub fn continues(&self, c: char) -> bool {
+        let joined = format!("{}{c}", self.pending);
+        lookup(&joined).is_some() || is_prefix(&joined)
+    }
+
     pub fn feed(&mut self, c: char) -> String {
         let mut out = String::new();
         let mut joined = self.pending.clone();

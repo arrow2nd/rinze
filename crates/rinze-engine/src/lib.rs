@@ -1,13 +1,19 @@
 //! SKK 方式の入力の状態機械。入出力を持たず、候補の取得は [`Converter`] に任せる。
 //!
-//! 1 つの [`Session`] が 1 つの入力先 (フロントエンドの 1 接続) の入力途中の状態を持つ。
+//! 1 つの [`Session`] が 1 つの入力先 (フロントエンドの 1 接続) の入力モードと入力途中の状態を持つ。
 //! フロントエンドは [`Session::handle`] にキーと左文脈を渡し、[`Response`] の確定文字列を挿入し、
-//! 未確定文字列と候補一覧を表示する。
+//! 未確定文字列と候補一覧、入力モードを表示する。
+//!
+//! 入力モードは SKK と同じく、かな系 (ひらがな、カタカナ、半角カナ) と英字系 (ASCII、全角英字) に分かれる。
+//! 見出し (▽)、変換 (▼)、辞書登録はかな系のモードにしか無い。読みはどのモードでもひらがなで持ち、
+//! 表示と確定のときにモードの文字種にする。
 //!
 //! 候補は辞書の候補、生成した表記の順に送り、それも送り切ると SKK と同じ辞書登録に入る。
 //! 登録する語の入力欄も内側の [`Session`] で変換できるので、登録は入れ子になる。
+//! 入力欄は外側とは別のモードを持ち、ddskk と同じくひらがなで始まる。
 
 mod romaji;
+mod script;
 
 use std::mem;
 
@@ -26,9 +32,25 @@ pub enum Key {
     Backspace,
     /// SKK の `C-g`。
     Cancel,
+    /// SKK の `C-j`。
+    Kakutei,
+    /// SKK の `C-q`。
+    ToggleHalfwidth,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    #[default]
+    Hiragana,
+    Katakana,
+    HalfwidthKatakana,
+    /// キーをそのまま通す直接入力。
+    Ascii,
+    FullwidthLatin,
 }
 
 /// 送りがな。`consonant` は辞書の見出しに使う文字 (`ATte` なら `t`)、`kana` は確定した送りがな (`っ`)。
+/// `kana` はモードによらずひらがな。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Okuri {
     pub consonant: char,
@@ -39,7 +61,7 @@ pub struct Okuri {
 pub struct Query<'a> {
     /// フロントエンドが送った左文脈に、同じキーの処理中に確定した文字列を足したもの。
     pub left_context: &'a str,
-    /// 送りがなを含まない読み。
+    /// 送りがなを含まない読み。モードによらずひらがな。
     pub reading: &'a str,
     pub okuri: Option<&'a Okuri>,
 }
@@ -64,12 +86,17 @@ pub struct Response {
     pub candidates: Option<CandidatePage>,
     /// 辞書登録中だけ、いちばん内側の入力欄。
     pub registration: Option<RegistrationLine>,
+    /// 次のキーを受ける階層 (辞書登録中ならいちばん内側の入力欄) のモード。
+    pub mode: Mode,
+    /// true の間は [`Key::Kakutei`] 以外のキーをすべて処理せずに返す (`handled` は false、`commit` は空)。
+    /// フロントエンドは [`Key::Kakutei`] 以外のキーを送らずに、そのまま処理してよい。
+    pub passthrough: bool,
 }
 
 /// 辞書登録の入力欄。フロントエンドは `prompt` `text` `preedit` をこの順に並べて表示する。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistrationLine {
-    /// `[辞書登録] まよねーず: `。入れ子の深さだけ括弧を重ねる。
+    /// `[辞書登録] まよねーず: `。入れ子の深さだけ括弧を重ねる。見出しはモードによらずひらがな。
     pub prompt: String,
     /// 入力欄に確定した文字列。
     pub text: String,
@@ -87,7 +114,52 @@ pub struct CandidatePage {
 
 #[derive(Debug, Default)]
 pub struct Session {
+    input: Input,
+}
+
+#[derive(Debug)]
+enum Input {
+    Kana(KanaInput),
+    Latin(Latin),
+}
+
+#[derive(Debug, Default)]
+struct KanaInput {
+    script: Script,
     phase: Phase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Script {
+    #[default]
+    Hiragana,
+    Katakana,
+    HalfwidthKatakana,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Latin {
+    Ascii,
+    Fullwidth,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Switch {
+    ToggleKatakana,
+    ToggleHalfwidth,
+    Ascii,
+    FullwidthLatin,
+    Kakutei,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KanaKey {
+    Switch(Switch),
+    Char(char),
+    Space,
+    Enter,
+    Backspace,
+    Cancel,
 }
 
 #[derive(Debug)]
@@ -161,7 +233,32 @@ enum Cursor {
 struct Step<'a> {
     left_context: &'a str,
     commit: String,
+    next_mode: Option<Mode>,
     converter: &'a mut dyn Converter,
+}
+
+impl Default for Input {
+    fn default() -> Self {
+        Input::Kana(KanaInput::default())
+    }
+}
+
+impl Input {
+    fn new(mode: Mode) -> Self {
+        let kana = |script| {
+            Input::Kana(KanaInput {
+                script,
+                phase: Phase::default(),
+            })
+        };
+        match mode {
+            Mode::Hiragana => kana(Script::Hiragana),
+            Mode::Katakana => kana(Script::Katakana),
+            Mode::HalfwidthKatakana => kana(Script::HalfwidthKatakana),
+            Mode::Ascii => Input::Latin(Latin::Ascii),
+            Mode::FullwidthLatin => Input::Latin(Latin::Fullwidth),
+        }
+    }
 }
 
 impl Session {
@@ -174,34 +271,174 @@ impl Session {
         let mut step = Step {
             left_context,
             commit: String::new(),
+            next_mode: None,
             converter,
         };
-        let handled = self.step(key, &mut step);
+        let handled = match &mut self.input {
+            Input::Kana(kana) => kana.step(key, &mut step),
+            Input::Latin(latin) => latin.handle(key, &mut step),
+        };
+        if let Some(mode) = step.next_mode {
+            self.input = Input::new(mode);
+        }
+        self.response(handled, step.commit)
+    }
+
+    /// 入力途中のものを表示どおりに確定し、状態を空にする。モードは変えない。フロントエンドが入力先を離れるときに使う。
+    pub fn flush(&mut self) -> Response {
+        let commit = self.take_pending();
+        self.response(true, commit)
+    }
+
+    /// [`Session::flush`] したうえで、モードを始めのひらがなに戻す。フロントエンドが入力を有効にしたときに使う。
+    pub fn reset(&mut self) -> Response {
+        let commit = self.take_pending();
+        self.input = Input::default();
+        self.response(true, commit)
+    }
+
+    fn take_pending(&mut self) -> String {
+        match &mut self.input {
+            Input::Kana(kana) => kana.flush(),
+            Input::Latin(_) => String::new(),
+        }
+    }
+
+    fn response(&self, handled: bool, commit: String) -> Response {
         Response {
             handled,
-            commit: step.commit,
+            commit,
             preedit: self.preedit(),
             candidates: self.page(),
             registration: self.registration_line(1),
+            mode: self.mode(),
+            passthrough: matches!(self.input, Input::Latin(Latin::Ascii)),
         }
     }
 
-    /// 入力途中のものを表示どおりに確定し、状態を空にする。フロントエンドが入力先を離れるときに使う。
-    pub fn flush(&mut self) -> Response {
-        let commit = match mem::take(&mut self.phase) {
-            Phase::Direct { mut roman } => roman.flush_n_discard_rest().to_string(),
-            Phase::Midashi { kana, mut roman } => kana + roman.flush_n_discard_rest(),
-            Phase::Okuri { kana, .. } => kana,
-            Phase::Henkan { conv, .. } => conv.displayed(),
-            Phase::Register { reg, .. } => reg.reading().kana_surface(),
+    fn mode(&self) -> Mode {
+        match &self.input {
+            Input::Kana(KanaInput {
+                phase: Phase::Register { reg, .. },
+                ..
+            }) => reg.inner.mode(),
+            Input::Kana(kana) => kana.script.into(),
+            Input::Latin(latin) => (*latin).into(),
+        }
+    }
+
+    fn preedit(&self) -> String {
+        match &self.input {
+            Input::Kana(kana) => kana.preedit(),
+            Input::Latin(_) => String::new(),
+        }
+    }
+
+    fn registration_line(&self, depth: usize) -> Option<RegistrationLine> {
+        let Input::Kana(kana) = &self.input else {
+            return None;
         };
-        Response {
-            handled: true,
-            commit,
-            ..Response::default()
+        kana.registration_line(depth)
+    }
+
+    fn page(&self) -> Option<CandidatePage> {
+        let Input::Kana(kana) = &self.input else {
+            return None;
+        };
+        kana.page()
+    }
+}
+
+impl From<Script> for Mode {
+    fn from(script: Script) -> Self {
+        match script {
+            Script::Hiragana => Mode::Hiragana,
+            Script::Katakana => Mode::Katakana,
+            Script::HalfwidthKatakana => Mode::HalfwidthKatakana,
+        }
+    }
+}
+
+impl From<Latin> for Mode {
+    fn from(latin: Latin) -> Self {
+        match latin {
+            Latin::Ascii => Mode::Ascii,
+            Latin::Fullwidth => Mode::FullwidthLatin,
+        }
+    }
+}
+
+impl Latin {
+    fn handle(self, key: Key, step: &mut Step) -> bool {
+        match (self, key) {
+            (_, Key::Kakutei) => step.next_mode = Some(Mode::Hiragana),
+            // ddskk の全英モードの `C-q` は `skk-toggle-characters` で、カナモードに入る
+            (Latin::Fullwidth, Key::ToggleHalfwidth) => step.next_mode = Some(Mode::Katakana),
+            (Latin::Fullwidth, Key::Char(c)) => match script::fullwidth_latin(c) {
+                Some(wide) => step.commit.push(wide),
+                None => return false,
+            },
+            (Latin::Fullwidth, Key::Space) => step.commit.push('　'),
+            _ => return false,
+        }
+        true
+    }
+}
+
+impl KanaKey {
+    fn of(key: Key, roman: &Romaji) -> Self {
+        match key {
+            Key::Char(c) if roman.continues(c) => KanaKey::Char(c),
+            Key::Char('q') => KanaKey::Switch(Switch::ToggleKatakana),
+            Key::Char('l') => KanaKey::Switch(Switch::Ascii),
+            Key::Char('L') => KanaKey::Switch(Switch::FullwidthLatin),
+            Key::Char(c) => KanaKey::Char(c),
+            Key::Space => KanaKey::Space,
+            Key::Enter => KanaKey::Enter,
+            Key::Backspace => KanaKey::Backspace,
+            Key::Cancel => KanaKey::Cancel,
+            Key::Kakutei => KanaKey::Switch(Switch::Kakutei),
+            Key::ToggleHalfwidth => KanaKey::Switch(Switch::ToggleHalfwidth),
+        }
+    }
+}
+
+impl Script {
+    fn render(self, hiragana: &str) -> String {
+        match self {
+            Script::Hiragana => hiragana.to_string(),
+            Script::Katakana => script::katakana(hiragana),
+            Script::HalfwidthKatakana => script::halfwidth_katakana(hiragana),
         }
     }
 
+    fn after(self, switch: Switch) -> Mode {
+        match (switch, self) {
+            (Switch::ToggleKatakana, Script::Hiragana) => Mode::Katakana,
+            (Switch::ToggleKatakana | Switch::ToggleHalfwidth, Script::HalfwidthKatakana) => {
+                Mode::Hiragana
+            }
+            (Switch::ToggleKatakana, Script::Katakana) => Mode::Hiragana,
+            (Switch::ToggleHalfwidth, _) => Mode::HalfwidthKatakana,
+            (Switch::Ascii, _) => Mode::Ascii,
+            (Switch::FullwidthLatin, _) => Mode::FullwidthLatin,
+            (Switch::Kakutei, _) => self.into(),
+        }
+    }
+
+    fn midashi_converted(self, switch: Switch) -> Option<Script> {
+        match (switch, self) {
+            (Switch::ToggleKatakana, Script::Hiragana) => Some(Script::Katakana),
+            (Switch::ToggleKatakana, Script::Katakana) => Some(Script::Hiragana),
+            (Switch::ToggleKatakana | Switch::ToggleHalfwidth, _) => {
+                Some(Script::HalfwidthKatakana)
+            }
+            (Switch::Ascii | Switch::FullwidthLatin | Switch::Kakutei, _) => None,
+        }
+    }
+}
+
+impl KanaInput {
     fn step(&mut self, key: Key, step: &mut Step) -> bool {
         match mem::take(&mut self.phase) {
             Phase::Direct { roman } => self.direct(roman, key, step),
@@ -222,27 +459,44 @@ impl Session {
         }
     }
 
+    fn flush(&mut self) -> String {
+        let hiragana = match mem::take(&mut self.phase) {
+            Phase::Direct { mut roman } => roman.flush_n_discard_rest().to_string(),
+            Phase::Midashi { kana, mut roman } => kana + roman.flush_n_discard_rest(),
+            Phase::Okuri { kana, .. } => kana,
+            Phase::Henkan { conv, .. } => return conv.displayed(self.script),
+            Phase::Register { reg, .. } => reg.reading().kana_surface(),
+        };
+        self.script.render(&hiragana)
+    }
+
     fn direct(&mut self, mut roman: Romaji, key: Key, step: &mut Step) -> bool {
-        let handled = match key {
-            Key::Char(c) if c.is_ascii_uppercase() => {
-                step.commit.push_str(roman.flush_n_discard_rest());
-                return self.midashi(
-                    String::new(),
-                    Romaji::default(),
-                    Key::Char(c.to_ascii_lowercase()),
-                    step,
-                );
+        let handled = match KanaKey::of(key, &roman) {
+            KanaKey::Switch(switch) => {
+                step.commit
+                    .push_str(&self.script.render(roman.flush_n_discard_rest()));
+                step.next_mode = Some(self.script.after(switch));
+                return true;
             }
-            Key::Char(c) => {
-                step.commit.push_str(&roman.feed(c));
+            KanaKey::Char(c) if c.is_ascii_uppercase() => {
+                step.commit
+                    .push_str(&self.script.render(roman.flush_n_discard_rest()));
+                let mut roman = Romaji::default();
+                let kana = roman.feed(c.to_ascii_lowercase());
+                self.phase = Phase::Midashi { kana, roman };
+                return true;
+            }
+            KanaKey::Char(c) => {
+                step.commit.push_str(&self.script.render(&roman.feed(c)));
                 true
             }
-            Key::Space | Key::Enter => {
-                step.commit.push_str(roman.flush_n_discard_rest());
+            KanaKey::Space | KanaKey::Enter => {
+                step.commit
+                    .push_str(&self.script.render(roman.flush_n_discard_rest()));
                 false
             }
-            Key::Backspace => roman.backspace(),
-            Key::Cancel => {
+            KanaKey::Backspace => roman.backspace(),
+            KanaKey::Cancel => {
                 let had_pending = !roman.is_empty();
                 roman.clear();
                 had_pending
@@ -252,21 +506,31 @@ impl Session {
         handled
     }
 
+    fn commit_midashi(&self, kana: &str, switch: Switch, step: &mut Step) {
+        match self.script.midashi_converted(switch) {
+            Some(script) => step.commit.push_str(&script.render(kana)),
+            None => {
+                step.commit.push_str(&self.script.render(kana));
+                step.next_mode = Some(self.script.after(switch));
+            }
+        }
+    }
+
     fn midashi(&mut self, mut kana: String, mut roman: Romaji, key: Key, step: &mut Step) -> bool {
-        match key {
-            Key::Char(c) if c.is_ascii_uppercase() && !kana.is_empty() => {
+        match KanaKey::of(key, &roman) {
+            KanaKey::Switch(switch) => {
+                kana.push_str(roman.flush_n_discard_rest());
+                self.commit_midashi(&kana, switch, step);
+                return true;
+            }
+            KanaKey::Char(c) if c.is_ascii_uppercase() && !kana.is_empty() => {
                 kana.push_str(roman.flush_n_discard_rest());
                 let consonant = c.to_ascii_lowercase();
-                return self.okuri(
-                    kana,
-                    consonant,
-                    Romaji::default(),
-                    Key::Char(consonant),
-                    step,
-                );
+                self.feed_okuri(kana, consonant, Romaji::default(), consonant, step);
+                return true;
             }
-            Key::Char(c) => kana.push_str(&roman.feed(c.to_ascii_lowercase())),
-            Key::Space => {
+            KanaKey::Char(c) => kana.push_str(&roman.feed(c.to_ascii_lowercase())),
+            KanaKey::Space => {
                 kana.push_str(roman.flush_n_discard_rest());
                 if !kana.is_empty() {
                     let reading = Reading { kana, okuri: None };
@@ -274,17 +538,17 @@ impl Session {
                     return true;
                 }
             }
-            Key::Enter => {
+            KanaKey::Enter => {
                 kana.push_str(roman.flush_n_discard_rest());
-                step.commit.push_str(&kana);
+                step.commit.push_str(&self.script.render(&kana));
                 return true;
             }
-            Key::Backspace => {
+            KanaKey::Backspace => {
                 if !roman.backspace() && kana.pop().is_none() {
                     return true;
                 }
             }
-            Key::Cancel => return true,
+            KanaKey::Cancel => return true,
         }
         self.phase = Phase::Midashi { kana, roman };
         true
@@ -294,47 +558,57 @@ impl Session {
         &mut self,
         kana: String,
         consonant: char,
-        mut roman: Romaji,
+        roman: Romaji,
         key: Key,
         step: &mut Step,
     ) -> bool {
-        match key {
-            Key::Char(c) => {
-                let okuri = roman.feed(c.to_ascii_lowercase());
-                if okuri.is_empty() {
-                    self.phase = Phase::Okuri {
-                        kana,
-                        consonant,
-                        roman,
-                    };
-                } else {
-                    let reading = Reading {
-                        kana,
-                        okuri: Some(Okuri {
-                            consonant,
-                            kana: okuri,
-                        }),
-                    };
-                    self.convert(reading, roman, step);
-                }
-            }
-            Key::Space => {
+        match KanaKey::of(key, &roman) {
+            KanaKey::Switch(switch) => self.commit_midashi(&kana, switch, step),
+            KanaKey::Char(c) => self.feed_okuri(kana, consonant, roman, c, step),
+            KanaKey::Space => {
                 self.phase = Phase::Okuri {
                     kana,
                     consonant,
                     roman,
                 }
             }
-            Key::Enter => step.commit.push_str(&kana),
-            Key::Backspace => {
+            KanaKey::Enter => step.commit.push_str(&self.script.render(&kana)),
+            KanaKey::Backspace => {
                 self.phase = Phase::Midashi {
                     kana,
                     roman: Romaji::default(),
                 }
             }
-            Key::Cancel => {}
+            KanaKey::Cancel => {}
         }
         true
+    }
+
+    fn feed_okuri(
+        &mut self,
+        kana: String,
+        consonant: char,
+        mut roman: Romaji,
+        c: char,
+        step: &mut Step,
+    ) {
+        let okuri = roman.feed(c.to_ascii_lowercase());
+        if okuri.is_empty() {
+            self.phase = Phase::Okuri {
+                kana,
+                consonant,
+                roman,
+            };
+        } else {
+            let reading = Reading {
+                kana,
+                okuri: Some(Okuri {
+                    consonant,
+                    kana: okuri,
+                }),
+            };
+            self.convert(reading, roman, step);
+        }
     }
 
     fn convert(&mut self, reading: Reading, trailing_roman: Romaji, step: &mut Step) {
@@ -396,7 +670,7 @@ impl Session {
                 return true;
             }
             (Key::Char(c), Cursor::Page(page)) => {
-                if let Some(word) = conv.page_item(page, c) {
+                if let Some(word) = conv.page_item(page, c, self.script) {
                     step.commit.push_str(&word);
                     self.phase = Phase::Direct {
                         roman: trailing_roman,
@@ -406,14 +680,14 @@ impl Session {
             }
             (_, Cursor::Page(_)) => {}
             (Key::Enter, Cursor::Inline(_)) => {
-                step.commit.push_str(&conv.displayed());
+                step.commit.push_str(&conv.displayed(self.script));
                 self.phase = Phase::Direct {
                     roman: trailing_roman,
                 };
                 return true;
             }
             (Key::Backspace, Cursor::Inline(_)) => {
-                let mut word = conv.displayed();
+                let mut word = conv.displayed(self.script);
                 word.pop();
                 step.commit.push_str(&word);
                 self.phase = Phase::Direct {
@@ -421,8 +695,8 @@ impl Session {
                 };
                 return true;
             }
-            (Key::Char(_), Cursor::Inline(_)) => {
-                step.commit.push_str(&conv.displayed());
+            (Key::Char(_) | Key::Kakutei | Key::ToggleHalfwidth, Cursor::Inline(_)) => {
+                step.commit.push_str(&conv.displayed(self.script));
                 return self.direct(trailing_roman, key, step);
             }
         }
@@ -450,7 +724,7 @@ impl Session {
                     let reading = reg.reading();
                     step.converter
                         .register(&reading.kana, reading.okuri.as_ref(), word);
-                    step.commit.push_str(&reading.surface(word));
+                    step.commit.push_str(&reading.surface(word, self.script));
                     self.phase = Phase::Direct {
                         roman: trailing_roman,
                     };
@@ -465,6 +739,7 @@ impl Session {
                 }
                 Key::Space => reg.text.push(' '),
                 Key::Char(c) => reg.text.push(c),
+                Key::Kakutei | Key::ToggleHalfwidth => {}
             }
         }
         self.phase = Phase::Register {
@@ -475,15 +750,20 @@ impl Session {
     }
 
     fn preedit(&self) -> String {
+        let render = |hiragana: &str| self.script.render(hiragana);
         match &self.phase {
             Phase::Direct { roman } => roman.pending().to_string(),
-            Phase::Midashi { kana, roman } => format!("▽{kana}{}", roman.pending()),
-            Phase::Okuri { kana, roman, .. } => format!("▽{kana}*{}", roman.pending()),
+            Phase::Midashi { kana, roman } => format!("▽{}{}", render(kana), roman.pending()),
+            Phase::Okuri { kana, roman, .. } => format!("▽{}*{}", render(kana), roman.pending()),
             Phase::Henkan {
                 conv,
                 trailing_roman,
-            } => format!("▼{}{}", conv.displayed(), trailing_roman.pending()),
-            Phase::Register { reg, .. } => format!("▼{}", reg.reading().kana_surface()),
+            } => format!(
+                "▼{}{}",
+                conv.displayed(self.script),
+                trailing_roman.pending()
+            ),
+            Phase::Register { reg, .. } => format!("▼{}", render(&reg.reading().kana_surface())),
         }
     }
 
@@ -518,7 +798,7 @@ impl Session {
             .page_words(page)
             .iter()
             .zip(PAGE_LABELS)
-            .map(|(word, label)| (label, conv.reading.surface(word)))
+            .map(|(word, label)| (label, conv.reading.surface(word, self.script)))
             .collect();
         Some(CandidatePage {
             items,
@@ -543,12 +823,20 @@ impl Reading {
         }
     }
 
-    fn surface(&self, word: &str) -> String {
-        format!("{word}{}", self.okuri.as_ref().map_or("", |o| &o.kana))
+    fn surface(&self, word: &str, script: Script) -> String {
+        let okuri = self
+            .okuri
+            .as_ref()
+            .map_or(String::new(), |o| script.render(&o.kana));
+        format!("{word}{okuri}")
     }
 
     fn kana_surface(&self) -> String {
-        self.surface(&self.kana)
+        format!(
+            "{}{}",
+            self.kana,
+            self.okuri.as_ref().map_or("", |o| &o.kana)
+        )
     }
 
     fn midashi(&self) -> String {
@@ -631,10 +919,10 @@ fn push_unique(list: &mut Vec<String>, words: Vec<String>) -> bool {
 }
 
 impl Conversion {
-    fn displayed(&self) -> String {
+    fn displayed(&self, script: Script) -> String {
         match self.cursor {
-            Cursor::Inline(i) => self.reading.surface(&self.candidates[i]),
-            Cursor::Page(_) => self.reading.kana_surface(),
+            Cursor::Inline(i) => self.reading.surface(&self.candidates[i], script),
+            Cursor::Page(_) => script.render(&self.reading.kana_surface()),
         }
     }
 
@@ -676,11 +964,11 @@ impl Conversion {
         &self.candidates[start..end]
     }
 
-    fn page_item(&self, page: usize, label: char) -> Option<String> {
+    fn page_item(&self, page: usize, label: char, script: Script) -> Option<String> {
         let index = PAGE_LABELS.iter().position(|&l| l == label)?;
         self.page_words(page)
             .get(index)
-            .map(|w| self.reading.surface(w))
+            .map(|w| self.reading.surface(w, script))
     }
 
     fn next(&mut self) -> bool {

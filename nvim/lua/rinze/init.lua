@@ -5,6 +5,14 @@ local config = {
   cmd = nil,
   socket = nil,
   startup_timeout = 30000,
+  -- status() が返す、モードごとの表示
+  mode_labels = {
+    hiragana = 'かな',
+    katakana = 'カナ',
+    ['halfwidth-katakana'] = 'ｶﾅ',
+    ascii = 'aA',
+    ['fullwidth-latin'] = '全英',
+  },
 }
 
 local ns = vim.api.nvim_create_namespace('rinze')
@@ -12,6 +20,8 @@ local state = {
   chan = nil,
   enabled = false,
   preedit = '',
+  mode = nil,
+  keys_mapped = false,
   float_buf = nil,
   float_win = nil,
 }
@@ -21,7 +31,10 @@ local special_keys = {
   ['<CR>'] = 'enter',
   ['<BS>'] = 'backspace',
   ['<C-g>'] = 'ctrl-g',
+  ['<C-q>'] = 'ctrl-q',
 }
+
+local kakutei_key = '<C-j>'
 
 local function try_connect(path)
   local ok, chan = pcall(vim.fn.sockconnect, 'pipe', path, { rpc = true })
@@ -137,6 +150,22 @@ local function show_float(registration, candidates)
   end
 end
 
+local map_input_keys, unmap_input_keys
+
+local function follow_mode(res)
+  if res.passthrough == state.keys_mapped then
+    if res.passthrough then
+      unmap_input_keys()
+    else
+      map_input_keys()
+    end
+  end
+  if res.mode ~= state.mode then
+    state.mode = res.mode
+    vim.cmd.redrawstatus()
+  end
+end
+
 local function render(res)
   local row, col = unpack(vim.api.nvim_win_get_cursor(0))
   if res.commit ~= '' then
@@ -153,6 +182,7 @@ local function render(res)
     })
   end
   show_float(res.registration, res.candidates)
+  follow_mode(res)
 end
 
 local function on_key(name, lhs)
@@ -181,7 +211,7 @@ local function flush()
   end
 end
 
-local function each_key(f)
+local function each_input_key(f)
   for lhs, name in pairs(special_keys) do
     f(lhs, name)
   end
@@ -190,6 +220,29 @@ local function each_key(f)
     local lhs = ({ ['<'] = '<lt>', ['|'] = '<Bar>', ['\\'] = '<Bslash>' })[c] or c
     f(lhs, c)
   end
+end
+
+local function map_key(lhs, name)
+  vim.keymap.set('i', lhs, function()
+    on_key(name, lhs)
+  end, { nowait = true, silent = true, desc = 'rinze' })
+end
+
+function map_input_keys()
+  each_input_key(map_key)
+  vim.keymap.set('i', '<Esc>', function()
+    flush()
+    vim.api.nvim_feedkeys(vim.keycode('<Esc>'), 'ni', false)
+  end, { nowait = true, silent = true, desc = 'rinze' })
+  state.keys_mapped = true
+end
+
+function unmap_input_keys()
+  each_input_key(function(lhs)
+    pcall(vim.keymap.del, 'i', lhs)
+  end)
+  pcall(vim.keymap.del, 'i', '<Esc>')
+  state.keys_mapped = false
 end
 
 function M.setup(opts)
@@ -201,21 +254,14 @@ function M.enable()
   if state.enabled then
     return
   end
-  connect()
-  each_key(function(lhs, name)
-    vim.keymap.set('i', lhs, function()
-      on_key(name, lhs)
-    end, { nowait = true, silent = true, desc = 'rinze' })
-  end)
-  vim.keymap.set('i', '<Esc>', function()
-    flush()
-    vim.api.nvim_feedkeys(vim.keycode('<Esc>'), 'ni', false)
-  end, { nowait = true, silent = true, desc = 'rinze' })
+  local res = request('reset')
+  map_key(kakutei_key, 'ctrl-j')
   vim.api.nvim_create_autocmd('InsertLeave', {
     group = vim.api.nvim_create_augroup('rinze', { clear = true }),
     callback = flush,
   })
   state.enabled = true
+  follow_mode(res)
 end
 
 function M.disable()
@@ -223,12 +269,12 @@ function M.disable()
     return
   end
   flush()
-  each_key(function(lhs)
-    pcall(vim.keymap.del, 'i', lhs)
-  end)
-  pcall(vim.keymap.del, 'i', '<Esc>')
+  unmap_input_keys()
+  pcall(vim.keymap.del, 'i', kakutei_key)
   vim.api.nvim_del_augroup_by_name('rinze')
   state.enabled = false
+  state.mode = nil
+  vim.cmd.redrawstatus()
 end
 
 function M.toggle()
@@ -241,6 +287,16 @@ end
 
 function M.preedit()
   return state.preedit
+end
+
+-- 有効な間は `hiragana` `katakana` `halfwidth-katakana` `ascii` `fullwidth-latin` のどれか、無効なら nil
+function M.mode()
+  return state.mode
+end
+
+-- ステータスラインに出す文字列。無効なら空
+function M.status()
+  return state.mode and config.mode_labels[state.mode] or ''
 end
 
 return M

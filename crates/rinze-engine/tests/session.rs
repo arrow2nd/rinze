@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use rinze_engine::{
-    CandidatePage, Converter, Key, Okuri, Query, RegistrationLine, Response, Session,
+    CandidatePage, Converter, Key, Mode, Okuri, Query, RegistrationLine, Response, Session,
 };
 
 #[derive(Debug, PartialEq)]
@@ -121,6 +121,8 @@ impl Editor {
                 ("<CR>", Key::Enter),
                 ("<BS>", Key::Backspace),
                 ("<C-g>", Key::Cancel),
+                ("<C-j>", Key::Kakutei),
+                ("<C-q>", Key::ToggleHalfwidth),
             ]
             .into_iter()
             .find(|(name, _)| rest.starts_with(name))
@@ -144,7 +146,7 @@ impl Editor {
                     self.buffer.pop();
                 }
                 Key::Char(c) => self.buffer.push(c),
-                Key::Cancel => {}
+                Key::Cancel | Key::Kakutei | Key::ToggleHalfwidth => {}
             }
         }
         self.last = res;
@@ -152,6 +154,10 @@ impl Editor {
 
     fn preedit(&self) -> &str {
         &self.last.preedit
+    }
+
+    fn mode(&self) -> Mode {
+        self.last.mode
     }
 
     fn page(&self) -> Option<&CandidatePage> {
@@ -597,4 +603,321 @@ fn flush_は表示どおりに確定する() {
     assert_eq!((res.commit.as_str(), res.preedit.as_str()), ("明日", ""));
     ed.type_keys("Asi");
     assert_eq!(ed.session.flush().commit, "あし");
+}
+
+#[test]
+fn q_でひらがなとカタカナを切り替える() {
+    let mut ed = Editor::new(Table::new(&[]));
+    assert_eq!(ed.mode(), Mode::Hiragana, "始めはひらがな");
+    ed.type_keys("aq");
+    assert_eq!(ed.mode(), Mode::Katakana);
+    ed.type_keys("kyouq");
+    assert_eq!(ed.mode(), Mode::Hiragana);
+    ed.type_keys("a");
+    assert_eq!(ed.buffer, "あキョウあ");
+}
+
+#[test]
+fn 切り替えのキーより入力途中のローマ字の続きを優先する() {
+    let mut ed = Editor::new(Table::new(&[]));
+    ed.type_keys("zl");
+    assert_eq!(
+        (ed.buffer.as_str(), ed.mode()),
+        ("→", Mode::Hiragana),
+        "zl は矢印"
+    );
+    ed.type_keys("kanq");
+    assert_eq!(
+        (ed.buffer.as_str(), ed.mode()),
+        ("→かん", Mode::Katakana),
+        "保留中の n は「ん」にして切り替える"
+    );
+    ed.type_keys("kl");
+    assert_eq!(
+        (ed.buffer.as_str(), ed.mode()),
+        ("→かん", Mode::Ascii),
+        "続かない子音は捨てる"
+    );
+}
+
+#[test]
+fn 見出しの入力中の_q_は見出しの文字種を変えて確定する() {
+    let mut ed = Editor::new(Table::new(&[]));
+    ed.type_keys("Akanq");
+    assert_eq!(
+        (ed.buffer.as_str(), ed.preedit(), ed.mode()),
+        ("アカン", "", Mode::Hiragana),
+        "ひらがなモードではカタカナにし、モードは変えない"
+    );
+    ed.type_keys("qAsi");
+    assert_eq!(ed.preedit(), "▽アシ");
+    ed.type_keys("q");
+    assert_eq!(
+        (ed.buffer.as_str(), ed.mode()),
+        ("アカンあし", Mode::Katakana),
+        "カタカナモードではひらがなにする"
+    );
+    ed.type_keys("ATq");
+    assert_eq!(
+        ed.buffer, "アカンあしあ",
+        "送りがなの途中では送りがなを捨てる"
+    );
+}
+
+#[test]
+fn c_q_で半角カナに切り替え_もう一度で_ひらがなに戻る() {
+    let mut ed = Editor::new(Table::new(&[]));
+    ed.type_keys("<C-q>");
+    assert_eq!(ed.mode(), Mode::HalfwidthKatakana);
+    ed.type_keys("gapa-n,");
+    assert_eq!(ed.buffer, "ｶﾞﾊﾟｰﾝ､", "濁点と半濁点は 2 文字になる");
+    ed.type_keys("<C-q>a");
+    assert_eq!((ed.buffer.as_str(), ed.mode()), ("ｶﾞﾊﾟｰﾝ､あ", Mode::Hiragana));
+    ed.type_keys("q<C-q>");
+    assert_eq!(
+        ed.mode(),
+        Mode::HalfwidthKatakana,
+        "カタカナからも半角カナに入る"
+    );
+    ed.type_keys("q");
+    assert_eq!(ed.mode(), Mode::Hiragana, "半角カナの q はひらがなに戻る");
+}
+
+#[test]
+fn 見出しの入力中の_c_q_は見出しを半角カナにして確定する() {
+    let mut ed = Editor::new(Table::new(&[]));
+    ed.type_keys("Asi<C-q>");
+    assert_eq!((ed.buffer.as_str(), ed.mode()), ("ｱｼ", Mode::Hiragana));
+    ed.type_keys("<C-q>Kana");
+    assert_eq!(ed.preedit(), "▽ｶﾅ");
+    ed.type_keys("q");
+    assert_eq!(
+        (ed.buffer.as_str(), ed.mode()),
+        ("ｱｼｶﾅ", Mode::HalfwidthKatakana),
+        "半角カナモードの ▽ の q も半角カナで確定する"
+    );
+}
+
+#[test]
+fn l_で_ascii_に入り_c_j_以外のキーを通す() {
+    let mut ed = Editor::new(Table::new(&[("あした", &["明日"])]));
+    ed.type_keys("al");
+    assert_eq!(ed.mode(), Mode::Ascii);
+    assert!(ed.last.passthrough);
+    for key in [
+        "q", "L", "l", "A", "<C-q>", "<C-g>", "<Space>", "<CR>", "<BS>",
+    ] {
+        ed.type_keys(key);
+        assert_eq!(
+            (ed.last.handled, ed.last.commit.as_str(), ed.mode()),
+            (false, "", Mode::Ascii),
+            "{key} を通す"
+        );
+    }
+    ed.type_keys("<C-j>");
+    assert_eq!(
+        (ed.last.handled, ed.last.passthrough, ed.mode()),
+        (true, false, Mode::Hiragana)
+    );
+    ed.type_keys("Asita<Space><CR>");
+    assert_eq!(ed.buffer, "あqLlA 明日", "Enter と後退も通す");
+}
+
+#[test]
+fn l_を全角英字に変える() {
+    let mut ed = Editor::new(Table::new(&[]));
+    ed.type_keys("Lq Ab-1~");
+    assert_eq!(ed.mode(), Mode::FullwidthLatin);
+    assert!(!ed.last.passthrough);
+    assert_eq!(ed.buffer, "ｑ　Ａｂ−１〜");
+    ed.type_keys("<CR><C-j>a");
+    assert_eq!(
+        (ed.buffer.as_str(), ed.mode()),
+        ("ｑ　Ａｂ−１〜\nあ", Mode::Hiragana),
+        "Enter は通し、C-j でひらがなに戻る"
+    );
+    ed.type_keys("L<C-q>a");
+    assert_eq!(
+        (ed.buffer.as_str(), ed.mode()),
+        ("ｑ　Ａｂ−１〜\nあア", Mode::Katakana),
+        "ddskk と同じく全英の C-q はカタカナに入る"
+    );
+}
+
+#[test]
+fn c_j_はかなのモードでは入力途中のものを確定してモードを保つ() {
+    let mut ed = Editor::new(Table::new(&[("あした", &["明日"])]));
+    ed.type_keys("qAsi<C-j>");
+    assert_eq!((ed.buffer.as_str(), ed.mode()), ("アシ", Mode::Katakana));
+    ed.type_keys("Asita<Space><C-j>");
+    assert_eq!(ed.buffer, "アシ明日");
+    ed.type_keys("k<C-j>");
+    assert_eq!(
+        (ed.buffer.as_str(), ed.preedit(), ed.last.handled),
+        ("アシ明日", "", true),
+        "入力途中が無くても C-j は通さない"
+    );
+}
+
+#[test]
+fn 候補の表示中に切り替えのキーを打つと候補を確定してから切り替える() {
+    let mut ed = Editor::new(Table::new(&[("あした", &["明日", "朝"])]));
+    ed.type_keys("Asita<Space>q");
+    assert_eq!((ed.buffer.as_str(), ed.mode()), ("明日", Mode::Katakana));
+    ed.type_keys("Asita<Space><Space>l");
+    assert_eq!((ed.buffer.as_str(), ed.mode()), ("明日朝", Mode::Ascii));
+    ed.type_keys("<C-j>Asita<Space>L");
+    assert_eq!(
+        (ed.buffer.as_str(), ed.mode()),
+        ("明日朝明日", Mode::FullwidthLatin)
+    );
+    ed.type_keys("<C-j>Asita<Space><C-q>");
+    assert_eq!(
+        (ed.buffer.as_str(), ed.mode()),
+        ("明日朝明日明日", Mode::HalfwidthKatakana)
+    );
+}
+
+#[test]
+fn 一覧の選択キーの_l_は候補を選ぶ() {
+    let mut ed = Editor::new(Table::new(&[("かんじ", KANJI)]));
+    ed.type_keys("Kanji<Space><Space><Space><Space><Space>l");
+    assert_eq!((ed.buffer.as_str(), ed.mode()), ("幹二", Mode::Hiragana));
+}
+
+#[test]
+fn カタカナモードでも見出しをひらがなで引き_送りがなはカタカナで確定する() {
+    let mut ed = Editor::new(Table::new(&[("あした", &["明日"]), ("あe", &["会", "和"])]));
+    ed.type_keys("qAsita");
+    assert_eq!(ed.preedit(), "▽アシタ");
+    ed.type_keys("<Space>");
+    assert_eq!(ed.preedit(), "▼明日");
+    assert_eq!(ed.table.queries[0], recorded("", "あした", None));
+    ed.type_keys("<C-g>");
+    assert_eq!(ed.preedit(), "▽アシタ");
+    ed.type_keys("<Space><CR>");
+    ed.type_keys("AE");
+    assert_eq!(ed.preedit(), "▼会エ");
+    assert_eq!(
+        ed.table.queries[2],
+        recorded("明日", "あ", okuri('e', "え")),
+        "左文脈、読み、送りがなはひらがなで渡す"
+    );
+    ed.type_keys("<Space>");
+    assert_eq!(ed.preedit(), "▼和エ");
+    ed.type_keys("ru");
+    assert_eq!(
+        (ed.buffer.as_str(), ed.mode()),
+        ("明日和エル", Mode::Katakana)
+    );
+}
+
+#[test]
+fn 半角カナモードでも変換でき_送りがなは半角カナで確定する() {
+    let mut ed = Editor::new(Table::new(&[("あt", &["会", "合", "有", "遭", "逢"])]));
+    ed.type_keys("<C-q>AT");
+    assert_eq!(ed.preedit(), "▽ｱ*t");
+    ed.type_keys("t");
+    assert_eq!(ed.preedit(), "▼会ｯt");
+    assert_eq!(ed.table.queries[0], recorded("", "あ", okuri('t', "っ")));
+    ed.type_keys("<Space><Space><Space><Space>");
+    assert_eq!(
+        ed.page().unwrap().items,
+        [('a', "逢ｯ".to_string())],
+        "一覧の候補にも半角カナの送りがなを付ける"
+    );
+    assert_eq!(ed.preedit(), "▼ｱｯt");
+    ed.type_keys("ae");
+    assert_eq!(ed.buffer, "逢ｯﾃ");
+}
+
+#[test]
+fn 辞書登録の入力欄はひらがなで始まり_外側のモードとは別に切り替わる() {
+    let mut ed = Editor::new(Table::new(&[]));
+    ed.type_keys("qRinze<Space>");
+    assert_eq!(ed.preedit(), "▼リンゼ");
+    assert_eq!(
+        (ed.registration().as_deref(), ed.mode()),
+        (Some("[辞書登録] りんぜ: "), Mode::Hiragana),
+        "見出しはひらがなで出し、入力欄はひらがなで始まる"
+    );
+    ed.type_keys("aqa");
+    assert_eq!(
+        (ed.registration().as_deref(), ed.mode()),
+        (Some("[辞書登録] りんぜ: あア"), Mode::Katakana)
+    );
+    ed.type_keys("lb");
+    assert_eq!(
+        (ed.registration().as_deref(), ed.mode(), ed.last.passthrough),
+        (Some("[辞書登録] りんぜ: あアb"), Mode::Ascii, false),
+        "入力欄の ASCII は文字を入力欄に入れるので、素通しにはしない"
+    );
+    ed.type_keys("<C-j>Kana<CR>");
+    assert_eq!(
+        ed.registration().as_deref(),
+        Some("[辞書登録] りんぜ: あアbかな")
+    );
+    ed.type_keys("<CR>");
+    assert_eq!(
+        (ed.buffer.as_str(), ed.mode()),
+        ("あアbかな", Mode::Katakana),
+        "登録を終えると外側のモードに戻る"
+    );
+    assert_eq!(ed.table.registered, [registered("りんぜ", "あアbかな")]);
+}
+
+#[test]
+fn 入れ子の入力欄もひらがなで始まり_やめると外側の入力欄のモードに戻る() {
+    let mut ed = Editor::new(Table::new(&[]));
+    ed.type_keys("<C-q>Mayone-zu<Space>");
+    ed.type_keys("qMayo");
+    assert_eq!(
+        ed.registration().as_deref(),
+        Some("[辞書登録] まよねーず: ▽マヨ")
+    );
+    ed.type_keys("<Space>");
+    assert_eq!(
+        (ed.registration().as_deref(), ed.mode()),
+        (Some("[[辞書登録]] まよ: "), Mode::Hiragana)
+    );
+    ed.type_keys("<C-g>");
+    assert_eq!(
+        (ed.registration().as_deref(), ed.mode()),
+        (Some("[辞書登録] まよねーず: ▽マヨ"), Mode::Katakana)
+    );
+    ed.type_keys("<C-g><C-g>");
+    assert_eq!(
+        (ed.preedit(), ed.registration(), ed.mode()),
+        ("▽ﾏﾖﾈｰｽﾞ", None, Mode::HalfwidthKatakana)
+    );
+}
+
+#[test]
+fn カタカナモードで送りありの語を登録する() {
+    let mut ed = Editor::new(Table::new(&[]));
+    ed.type_keys("qAE");
+    assert_eq!(
+        (ed.preedit(), ed.registration().as_deref()),
+        ("▼アエ", Some("[辞書登録] あ*え: "))
+    );
+    ed.type_keys("和<CR>");
+    assert_eq!(ed.buffer, "和エ");
+    assert_eq!(ed.table.registered, [registered("あe", "和")]);
+}
+
+#[test]
+fn flush_はモードを保ち_reset_はひらがなに戻す() {
+    let mut ed = Editor::new(Table::new(&[]));
+    ed.type_keys("qAsi");
+    let res = ed.session.flush();
+    assert_eq!((res.commit.as_str(), res.mode), ("アシ", Mode::Katakana));
+    ed.type_keys("l");
+    let res = ed.session.flush();
+    assert_eq!((res.mode, res.passthrough), (Mode::Ascii, true));
+    ed.type_keys("<C-j>qKa");
+    let res = ed.session.reset();
+    assert_eq!(
+        (res.commit.as_str(), res.mode, res.preedit.as_str()),
+        ("カ", Mode::Hiragana, "")
+    );
 }

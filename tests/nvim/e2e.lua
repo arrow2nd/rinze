@@ -34,6 +34,15 @@ vim.keymap.set('i', snapshot, function()
   table.insert(snapshots, { preedit = rinze.preedit(), buffer = buffer_text(), list = float_text() })
 end)
 
+local mode_snapshot = '<F10>'
+vim.keymap.set('i', mode_snapshot, function()
+  table.insert(snapshots, {
+    buffer = buffer_text(),
+    status = rinze.status(),
+    a_reaches_rinze = vim.fn.maparg('a', 'i') ~= '',
+  })
+end)
+
 local function type_in_new_buffer(keys)
   snapshots = {}
   vim.cmd('enew!')
@@ -86,6 +95,31 @@ check('一覧の a で確定し一覧を閉じる', { snaps[3].list, snaps[3].pr
 
 text = type_in_new_buffer('a<Space>i<CR>u<BS>e')
 check('素通しした空白・改行・後退', text, 'あ い\nえ')
+
+text, snaps = type_in_new_buffer(
+  'koreha' .. mode_snapshot .. 'l' .. mode_snapshot .. 'Neovim' .. mode_snapshot
+    .. '<C-j>' .. mode_snapshot .. 'noq' .. mode_snapshot .. 'puraguinq' .. mode_snapshot .. 'deKaKimasu.'
+)
+print('モードを切り替えながら打った途中: ' .. vim.inspect(snaps))
+check('始めはひらがな', snaps[1], { buffer = 'これは', status = 'かな', a_reaches_rinze = true })
+check('l で ASCII に入り、キーを rinze に送らない', snaps[2], { buffer = 'これは', status = 'aA', a_reaches_rinze = false })
+check('ASCII では打ったとおりに入る', snaps[3].buffer, 'これはNeovim')
+check('C-j でひらがなに戻る', snaps[4], { buffer = 'これはNeovim', status = 'かな', a_reaches_rinze = true })
+check('q でカタカナに入る', { snaps[5].buffer, snaps[5].status }, { 'これはNeovimの', 'カナ' })
+check('もう一度 q でひらがなに戻る', { snaps[6].buffer, snaps[6].status }, { 'これはNeovimのプラグイン', 'かな' })
+check('モードを切り替えながら打った文', text, 'これはNeovimのプラグインで書きます。')
+
+text = type_in_new_buffer('<C-q>pa-n<C-q>Lab<C-j>a')
+check('半角カナと全角英字', text, 'ﾊﾟｰﾝａｂあ')
+
+type_in_new_buffer('l')
+text, snaps = type_in_new_buffer('abc' .. mode_snapshot .. '<C-j>')
+check('挿入モードを抜けて戻ってもモードを保つ', { text, snaps[1].status }, { 'abc', 'aA' })
+type_in_new_buffer('q')
+vim.cmd('RinzeDisable')
+check('無効にするとモードは nil', { rinze.mode(), rinze.status() }, { nil, '' })
+vim.cmd('RinzeEnable')
+check('有効にするとひらがなで始まる', rinze.mode(), 'hiragana')
 
 seen = {}
 text, snaps = type_in_new_buffer('Rinze<Space>' .. space_until_registration .. snapshot .. 'Rin<Space>' .. snapshot .. '<CR>ze' .. snapshot .. '<CR>' .. snapshot)

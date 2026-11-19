@@ -2,12 +2,14 @@
 //!
 //! メソッド:
 //! - `key(key: string, left_context: string) -> response`
-//!   `key` は 1 文字か `space` `enter` `backspace` `ctrl-g`。
-//! - `flush() -> response` 入力途中のものを表示どおりに確定する。
+//!   `key` は 1 文字か `space` `enter` `backspace` `ctrl-g` `ctrl-j` `ctrl-q`。
+//! - `flush() -> response` 入力途中のものを表示どおりに確定する。モードは変えない。
+//! - `reset() -> response` `flush` したうえで、モードをひらがなに戻す。
 //!
-//! `response` は `{handled, commit, preedit, candidates, registration}` の map。
+//! `response` は `{handled, commit, preedit, candidates, registration, mode, passthrough}` の map。
 //! `candidates` は一覧の表示中だけ `{items: [[label, word], ...], page, pages}`、
 //! `registration` は辞書登録中だけ `{prompt, text, preedit}` で、それ以外は nil。
+//! `mode` は `hiragana` `katakana` `halfwidth-katakana` `ascii` `fullwidth-latin` のどれか。
 
 pub mod user_dict;
 
@@ -17,7 +19,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use rinze_dict::Dictionary;
-use rinze_engine::{Converter, Key, Okuri, Query, Response, Session};
+use rinze_engine::{Converter, Key, Mode, Okuri, Query, Response, Session};
 use rinze_zenz::Zenz;
 use rmpv::Value;
 use user_dict::UserDictionary;
@@ -274,6 +276,7 @@ fn dispatch(
             Ok(session.handle(key, left, &mut SharedConverter(backend)))
         }
         "flush" => Ok(session.flush()),
+        "reset" => Ok(session.reset()),
         _ => Err(format!("未知のメソッド: {method}")),
     }
 }
@@ -285,8 +288,20 @@ fn parse_key(name: &str) -> Result<Key, String> {
         ("enter", ..) => Ok(Key::Enter),
         ("backspace", ..) => Ok(Key::Backspace),
         ("ctrl-g", ..) => Ok(Key::Cancel),
+        ("ctrl-j", ..) => Ok(Key::Kakutei),
+        ("ctrl-q", ..) => Ok(Key::ToggleHalfwidth),
         (_, Some(c), None) => Ok(Key::Char(c)),
         _ => Err(format!("未知のキー: {name}")),
+    }
+}
+
+fn mode_name(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Hiragana => "hiragana",
+        Mode::Katakana => "katakana",
+        Mode::HalfwidthKatakana => "halfwidth-katakana",
+        Mode::Ascii => "ascii",
+        Mode::FullwidthLatin => "fullwidth-latin",
     }
 }
 
@@ -316,6 +331,8 @@ fn encode_response(r: &Response) -> Value {
         ("preedit".into(), r.preedit.as_str().into()),
         ("candidates".into(), candidates),
         ("registration".into(), registration),
+        ("mode".into(), mode_name(r.mode).into()),
+        ("passthrough".into(), r.passthrough.into()),
     ])
 }
 
