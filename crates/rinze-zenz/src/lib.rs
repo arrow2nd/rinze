@@ -3,6 +3,8 @@
 //! プロンプトは `[<CTX> 左文脈末尾 40 字] <IN> 読み (カタカナ) <OUT>` で、BOS を付けて 1 系列で decode する。
 //! その KV を各候補の系列へ複製し、全候補のトークンを 1 バッチで decode する。
 //! 点数は候補トークン列の対数尤度の和で、EOS は含めない。
+//!
+//! [`Zenz::generate`] は同じプロンプトから表記をビーム探索で生成する。
 
 use std::error::Error;
 use std::ffi::{CString, c_char};
@@ -34,6 +36,21 @@ pub struct Zenz {
     model: &'static LlamaModel,
     ctx: LlamaContext<'static>,
     batch: LlamaBatch<'static>,
+    stops: Vec<bool>,
+}
+
+/// 生成した表記と、その対数尤度。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Generated {
+    pub text: String,
+    pub score: f64,
+}
+
+struct Beam {
+    tokens: Vec<LlamaToken>,
+    score: f64,
+    seq: i32,
+    logits: i32,
 }
 
 impl Zenz {
@@ -53,7 +70,6 @@ impl Zenz {
             &CString::new("tokenizer.ggml.pre")?,
             ParamOverrideValue::Str(value),
         );
-        // コンテキストがモデルを借用するため、常駐中はモデルを手放さない前提で 'static にする
         let model: &'static LlamaModel = Box::leak(Box::new(LlamaModel::load_from_file(
             &backend, model_path, &params,
         )?));
@@ -69,11 +85,23 @@ impl Zenz {
             .with_flash_attention_policy(0)
             .with_no_perf(true);
         let ctx = model.new_context(&backend, cparams)?;
+        let vocab = model.vocab();
+        // zenz-v3.2 は出力のあとに EOS を出さず、次のタグ (U+EE00 台の私用文字) を生成し続ける。
+        // UTF-8 で 0xEE は U+E000..=U+EFFF の先頭バイトにしか現れないので、それを含むトークンで打ち切る
+        let stops = vocab
+            .tokens()
+            .map(|t| {
+                vocab.is_eog(t)
+                    || vocab.is_control(t)
+                    || vocab.token_to_piece(t, true, None).contains(&0xEE)
+            })
+            .collect();
         Ok(Self {
             _backend: backend,
             model,
             ctx,
             batch: LlamaBatch::new(N_CTX as usize, 1),
+            stops,
         })
     }
 
@@ -96,7 +124,6 @@ impl Zenz {
             self.batch.add(t, i as i32, &[0], i + 1 == prompt.len())?;
         }
         self.ctx.decode(&mut self.batch)?;
-        // 各候補の先頭トークンの確率はプロンプト末尾の logits から引く
         let first = self.ctx.get_logits_ith(self.batch.n_tokens() - 1).to_vec();
 
         let mut scores = Vec::with_capacity(cands.len());
@@ -110,8 +137,6 @@ impl Zenz {
             for (g, toks) in group.iter().enumerate() {
                 let seq = g as i32 + 1;
                 let mut v = Vec::new();
-                // 最後のトークンの logits (EOS の確率) は点数に使わないが、試作と同じバッチ構成にして
-                // 点数を一致させるために最後のトークンも decode する
                 for (k, &t) in toks.iter().enumerate() {
                     v.push(self.batch.n_tokens());
                     self.batch.add(t, p + k as i32, &[seq], true)?;
@@ -136,6 +161,102 @@ impl Zenz {
         Ok(scores)
     }
 
+    /// `reading` (ひらがな、送りがなを含む) の表記を、対数尤度の高い順に最大 `width` 件生成する。
+    /// 幅 `width` のビーム探索で、出力の終わりまで生成できたものだけを返す。
+    pub fn generate(
+        &mut self,
+        left_context: &str,
+        reading: &str,
+        width: usize,
+    ) -> Result<Vec<Generated>> {
+        let width = width.clamp(1, (N_SEQ_MAX as usize - 1) / 2);
+        let prompt = self.tokenize(&build_prompt(left_context, reading), true);
+        let p = prompt.len() as i32;
+        let max_tokens = reading.chars().count() + 4;
+
+        self.ctx.clear_kv_cache();
+        self.batch.clear();
+        for (i, &t) in prompt.iter().enumerate() {
+            self.batch.add(t, i as i32, &[0], i + 1 == prompt.len())?;
+        }
+        self.ctx.decode(&mut self.batch)?;
+        let mut alive = vec![Beam {
+            tokens: Vec::new(),
+            score: 0.0,
+            seq: 0,
+            logits: self.batch.n_tokens() - 1,
+        }];
+        let mut done: Vec<(Vec<LlamaToken>, f64)> = Vec::new();
+
+        for step in 0..=max_tokens {
+            let mut next: Vec<(usize, LlamaToken, f64)> = Vec::new();
+            for (b, beam) in alive.iter().enumerate() {
+                let logits = self.ctx.get_logits_ith(beam.logits);
+                let lse = log_sum_exp(logits);
+                for (token, logit) in top_k(logits, width) {
+                    let score = beam.score + logit as f64 - lse;
+                    if self.stops[token.0 as usize] {
+                        if !beam.tokens.is_empty() {
+                            done.push((beam.tokens.clone(), score));
+                        }
+                    } else if step < max_tokens {
+                        next.push((b, token, score));
+                    }
+                }
+            }
+            done.sort_by(|a, b| b.1.total_cmp(&a.1));
+            done.truncate(width);
+            next.sort_by(|a, b| b.2.total_cmp(&a.2));
+            next.truncate(width);
+            if done.len() == width {
+                let worst = done[width - 1].1;
+                next.retain(|c| c.2 > worst);
+            }
+            if next.is_empty() {
+                break;
+            }
+
+            let base = 1 + (step % 2) as i32 * width as i32;
+            self.batch.clear();
+            let mut grown = Vec::with_capacity(next.len());
+            for (j, &(b, token, score)) in next.iter().enumerate() {
+                let parent = &alive[b];
+                let seq = base + j as i32;
+                self.ctx.clear_kv_cache_seq(Some(seq as u32), None, None)?;
+                self.ctx.copy_kv_cache_seq(parent.seq, seq, None, None)?;
+                self.batch
+                    .add(token, p + parent.tokens.len() as i32, &[seq], true)?;
+                let mut tokens = parent.tokens.clone();
+                tokens.push(token);
+                grown.push(Beam {
+                    tokens,
+                    score,
+                    seq,
+                    logits: self.batch.n_tokens() - 1,
+                });
+            }
+            for beam in alive.iter().filter(|b| b.seq != 0) {
+                self.ctx
+                    .clear_kv_cache_seq(Some(beam.seq as u32), None, None)?;
+            }
+            self.ctx.decode(&mut self.batch)?;
+            alive = grown;
+        }
+
+        let vocab = self.model.vocab();
+        Ok(done
+            .into_iter()
+            .filter_map(|(tokens, score)| {
+                let bytes: Vec<u8> = tokens
+                    .iter()
+                    .flat_map(|&t| vocab.token_to_piece(t, false, None))
+                    .collect();
+                let text = String::from_utf8(bytes).ok()?.replace('　', " ");
+                Some(Generated { text, score })
+            })
+            .collect())
+    }
+
     fn tokenize(&self, text: &str, add_bos: bool) -> Vec<LlamaToken> {
         let text = text.replace(' ', "　").replace('\n', "");
         self.model.vocab().tokenize(text.as_bytes(), add_bos, false)
@@ -143,14 +264,28 @@ impl Zenz {
 }
 
 fn log_prob(logits: &[f32], target: LlamaToken) -> f64 {
+    logits[target.0 as usize] as f64 - log_sum_exp(logits)
+}
+
+fn log_sum_exp(logits: &[f32]) -> f64 {
     let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64;
-    let lse = max
-        + logits
-            .iter()
-            .map(|&v| (v as f64 - max).exp())
-            .sum::<f64>()
-            .ln();
-    logits[target.0 as usize] as f64 - lse
+    max + logits
+        .iter()
+        .map(|&v| (v as f64 - max).exp())
+        .sum::<f64>()
+        .ln()
+}
+
+fn top_k(logits: &[f32], k: usize) -> Vec<(LlamaToken, f32)> {
+    let mut items: Vec<(LlamaToken, f32)> = logits
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (LlamaToken(i as i32), v))
+        .collect();
+    let k = k.min(items.len());
+    items.select_nth_unstable_by(k - 1, |a, b| b.1.total_cmp(&a.1));
+    items.truncate(k);
+    items
 }
 
 fn build_prompt(left_context: &str, reading: &str) -> String {

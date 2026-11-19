@@ -39,7 +39,6 @@
           cargoLock.lockFile = ./Cargo.lock;
           cargoBuildFlags = [ "-p" "rinzed" ];
           nativeBuildInputs = nativeDeps pkgs;
-          # モデルと辞書が要るテストはパスが無いと飛ばされるだけなので、ここでは走らせない
           doCheck = false;
         } // simdEnv pkgs);
       });

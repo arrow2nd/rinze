@@ -8,6 +8,7 @@ rinze-engine.workspace = true
 rinze-dict.workspace = true
 rinze-zenz.workspace = true
 rmpv.workspace = true
+encoding_rs.workspace = true
 
 [dev-dependencies]
 serde.workspace = true

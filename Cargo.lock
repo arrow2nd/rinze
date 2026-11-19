@@ -376,6 +376,7 @@ dependencies = [
 name = "rinzed"
 version = "0.1.0"
 dependencies = [
+ "encoding_rs",
  "rinze-dict",
  "rinze-engine",
  "rinze-zenz",

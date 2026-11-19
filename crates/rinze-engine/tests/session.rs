@@ -1,46 +1,79 @@
 use std::collections::HashMap;
 
-use rinze_engine::{CandidatePage, Converter, Key, Query, Response, Session};
+use rinze_engine::{
+    CandidatePage, Converter, Key, Okuri, Query, RegistrationLine, Response, Session,
+};
 
-/// 見出しから候補を引くだけの変換器。受け取った問い合わせを記録する。
-/// 左文脈、読み、送りがな (子音とかな)
 type Recorded = (String, String, Option<(char, String)>);
 
 #[derive(Default)]
 struct Table {
     entries: HashMap<String, Vec<String>>,
+    generated: HashMap<String, Vec<String>>,
     queries: Vec<Recorded>,
+    generations: Vec<Recorded>,
+    registered: Vec<(String, String)>,
+}
+
+fn table(entries: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
+    entries
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.iter().map(|s| s.to_string()).collect()))
+        .collect()
+}
+
+fn midashi(reading: &str, okuri: Option<&Okuri>) -> String {
+    match okuri {
+        Some(o) => format!("{reading}{}", o.consonant),
+        None => reading.to_string(),
+    }
+}
+
+fn record(q: &Query) -> Recorded {
+    (
+        q.left_context.to_string(),
+        q.reading.to_string(),
+        q.okuri.map(|o| (o.consonant, o.kana.clone())),
+    )
 }
 
 impl Table {
     fn new(entries: &[(&str, &[&str])]) -> Self {
         Self {
-            entries: entries
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.iter().map(|s| s.to_string()).collect()))
-                .collect(),
-            queries: Vec::new(),
+            entries: table(entries),
+            ..Self::default()
         }
+    }
+
+    fn generating(mut self, generated: &[(&str, &[&str])]) -> Self {
+        self.generated = table(generated);
+        self
     }
 }
 
 impl Converter for Table {
     fn candidates(&mut self, q: &Query) -> Vec<String> {
-        let okuri = q.okuri.map(|o| (o.consonant, o.kana.clone()));
-        self.queries.push((
-            q.left_context.to_string(),
-            q.reading.to_string(),
-            okuri.clone(),
-        ));
-        let key = match okuri {
-            Some((c, _)) => format!("{}{c}", q.reading),
-            None => q.reading.to_string(),
-        };
+        self.queries.push(record(q));
+        let key = midashi(q.reading, q.okuri);
         self.entries.get(&key).cloned().unwrap_or_default()
+    }
+
+    fn generate(&mut self, q: &Query) -> Vec<String> {
+        self.generations.push(record(q));
+        let key = midashi(q.reading, q.okuri);
+        self.generated.get(&key).cloned().unwrap_or_default()
+    }
+
+    fn register(&mut self, reading: &str, okuri: Option<&Okuri>, word: &str) {
+        let key = midashi(reading, okuri);
+        self.registered.push((key.clone(), word.to_string()));
+        self.entries
+            .entry(key)
+            .or_default()
+            .insert(0, word.to_string());
     }
 }
 
-/// フロントエンドの代わり。確定文字列をバッファへ挿入し、エンジンが処理しなかったキーは自分で処理する。
 struct Editor {
     session: Session,
     table: Table,
@@ -58,7 +91,6 @@ impl Editor {
         }
     }
 
-    /// `<Space>` `<CR>` `<BS>` `<C-g>` 以外の文字はそのまま 1 キーとして打つ。
     fn type_keys(&mut self, keys: &str) -> &mut Self {
         let mut rest = keys;
         while let Some(c) = rest.chars().next() {
@@ -102,6 +134,16 @@ impl Editor {
 
     fn page(&self) -> Option<&CandidatePage> {
         self.last.candidates.as_ref()
+    }
+
+    fn registration(&self) -> Option<String> {
+        self.last.registration.as_ref().map(
+            |RegistrationLine {
+                 prompt,
+                 text,
+                 preedit,
+             }| format!("{prompt}{text}{preedit}"),
+        )
     }
 }
 
@@ -263,9 +305,15 @@ fn 四回目までその場に出し五回目から一覧にする() {
     assert_eq!((page.page, page.items.len()), (1, 1));
     ed.type_keys("<Space>");
     assert_eq!(
+        ed.registration().as_deref(),
+        Some("[辞書登録] かんじ: "),
+        "辞書の候補も生成もなければ登録に入る"
+    );
+    ed.type_keys("<C-g>");
+    assert_eq!(
         ed.page().unwrap().page,
         1,
-        "候補が尽きたら最後のページに留まる"
+        "登録をやめると最後のページに戻る"
     );
 
     ed.type_keys("xx");
@@ -304,12 +352,209 @@ fn 最初の候補で_x_を打つと見出しに戻る() {
 }
 
 #[test]
-fn 候補が無ければ見出しのまま残り_enter_でかなを確定する() {
+fn 候補が無ければ登録に入り_やめると見出しに戻って_enter_でかなを確定する() {
     let mut ed = Editor::new(Table::new(&[]));
     ed.type_keys("Rinze<Space>");
-    assert_eq!(ed.preedit(), "▽りんぜ");
+    assert_eq!(ed.preedit(), "▼りんぜ");
+    assert_eq!(ed.registration().as_deref(), Some("[辞書登録] りんぜ: "));
+    assert_eq!(
+        ed.table.generations.len(),
+        1,
+        "辞書に無ければ変換の開始時に生成する"
+    );
+    ed.type_keys("<C-g>");
+    assert_eq!((ed.preedit(), ed.registration()), ("▽りんぜ", None));
     ed.type_keys("<CR>");
     assert_eq!((ed.buffer.as_str(), ed.preedit()), ("りんぜ", ""));
+
+    ed.type_keys("Rinze<Space><CR>");
+    assert_eq!(
+        (ed.preedit(), ed.registration()),
+        ("▽りんぜ", None),
+        "空のまま Enter しても登録をやめる"
+    );
+    assert!(ed.table.registered.is_empty());
+}
+
+#[test]
+fn 辞書の候補を送り切ると生成した表記に進み_重複は出さない() {
+    let mut ed = Editor::new(
+        Table::new(&[("あした", &["明日", "朝"])])
+            .generating(&[("あした", &["明日", "アシタ", "あした。"])]),
+    );
+    ed.type_keys("kyouhaAsita<Space>");
+    assert!(
+        ed.table.generations.is_empty(),
+        "辞書に候補があれば変換の開始時には生成しない"
+    );
+    ed.type_keys("<Space>");
+    assert_eq!(ed.preedit(), "▼朝");
+    ed.type_keys("<Space>");
+    assert_eq!(ed.preedit(), "▼アシタ", "辞書と重複する「明日」は飛ばす");
+    assert_eq!(
+        ed.table.generations,
+        [("きょうは".to_string(), "あした".to_string(), None)],
+        "生成にも左文脈を渡す"
+    );
+    ed.type_keys("<Space>");
+    assert_eq!(ed.preedit(), "▼あした。");
+    ed.type_keys("xx");
+    assert_eq!(ed.preedit(), "▼朝", "生成した表記から辞書の候補へ戻れる");
+    ed.type_keys("<Space><Space><Space>");
+    assert!(
+        ed.registration().is_some(),
+        "生成した表記も送り切ると登録に入る"
+    );
+    assert_eq!(ed.table.generations.len(), 1, "生成は 1 度だけ");
+}
+
+#[test]
+fn 辞書に無い読みは生成した表記が最初の候補になる() {
+    let mut ed = Editor::new(Table::new(&[]).generating(&[("まよねーず", &["マヨネーズ"])]));
+    ed.type_keys("Mayone-zu<Space>");
+    assert_eq!(ed.preedit(), "▼マヨネーズ");
+    ed.type_keys("wo");
+    assert_eq!(ed.buffer, "マヨネーズを");
+}
+
+#[test]
+fn 一覧の最後のページに空きがあれば生成した表記をそのページに足す() {
+    let mut ed =
+        Editor::new(Table::new(&[("かんじ", &KANJI[..6])]).generating(&[("かんじ", &["カンジ"])]));
+    ed.type_keys("Kanji<Space><Space><Space><Space><Space>");
+    assert_eq!(ed.page().unwrap().items.len(), 2);
+    ed.type_keys("<Space>");
+    let page = ed.page().unwrap();
+    assert_eq!((page.page, page.pages), (0, 1));
+    assert_eq!(page.items[2], ('d', "カンジ".to_string()));
+}
+
+#[test]
+fn 登録した語を元の位置に確定し_次の変換で候補に出る() {
+    let mut ed = Editor::new(Table::new(&[("りん", &["林"]), ("ぜ", &["是"])]));
+    ed.type_keys("korehaRinze<Space>");
+    assert_eq!(ed.registration().as_deref(), Some("[辞書登録] りんぜ: "));
+    ed.type_keys("Rin<Space>");
+    assert_eq!(
+        ed.registration().as_deref(),
+        Some("[辞書登録] りんぜ: ▼林"),
+        "入力欄でも変換できる"
+    );
+    assert_eq!(
+        ed.table.queries[1].0, "これは",
+        "入力欄の変換の左文脈は元の位置の左文脈"
+    );
+    ed.type_keys("Ze<Space>");
+    assert_eq!(
+        ed.registration().as_deref(),
+        Some("[辞書登録] りんぜ: 林▼是")
+    );
+    ed.type_keys("<CR>");
+    assert_eq!(
+        ed.registration().as_deref(),
+        Some("[辞書登録] りんぜ: 林是")
+    );
+    assert_eq!(ed.buffer, "これは", "入力欄の確定は元の位置には入らない");
+    ed.type_keys("<CR>");
+    assert_eq!(
+        (ed.buffer.as_str(), ed.preedit(), ed.registration()),
+        ("これは林是", "", None)
+    );
+    assert_eq!(
+        ed.table.registered,
+        [("りんぜ".to_string(), "林是".to_string())]
+    );
+
+    ed.type_keys("Rinze<Space>");
+    assert_eq!(ed.preedit(), "▼林是");
+}
+
+#[test]
+fn 登録は入れ子にでき_内側をやめると外側の入力欄に戻る() {
+    let mut ed = Editor::new(Table::new(&[]));
+    ed.type_keys("Mayone-zu<Space>");
+    ed.type_keys("Mayo<Space>");
+    assert_eq!(ed.registration().as_deref(), Some("[[辞書登録]] まよ: "));
+    ed.type_keys("<C-g>");
+    assert_eq!(
+        ed.registration().as_deref(),
+        Some("[辞書登録] まよねーず: ▽まよ"),
+        "内側の登録をやめると外側の入力欄の見出しに戻る"
+    );
+    ed.type_keys("<C-g>");
+    assert_eq!(
+        ed.registration().as_deref(),
+        Some("[辞書登録] まよねーず: ")
+    );
+
+    ed.type_keys("Mayo<Space>");
+    ed.type_keys("真夜<CR>");
+    assert_eq!(
+        ed.registration().as_deref(),
+        Some("[辞書登録] まよねーず: 真夜"),
+        "内側で登録した語は外側の入力欄に入る"
+    );
+    ed.type_keys("ne-zu<CR>");
+    assert_eq!(ed.buffer, "真夜ねーず");
+    assert_eq!(
+        ed.table.registered,
+        [
+            ("まよ".to_string(), "真夜".to_string()),
+            ("まよねーず".to_string(), "真夜ねーず".to_string())
+        ]
+    );
+}
+
+#[test]
+fn 入力欄の後退と_c_g_は入力途中があればそれを先に扱う() {
+    let mut ed = Editor::new(Table::new(&[]));
+    ed.type_keys("Mayone-zu<Space>mayo<BS>");
+    assert_eq!(
+        ed.registration().as_deref(),
+        Some("[辞書登録] まよねーず: ま")
+    );
+    ed.type_keys("Yo<C-g>");
+    assert_eq!(
+        ed.registration().as_deref(),
+        Some("[辞書登録] まよねーず: ま")
+    );
+    ed.type_keys("<C-g>");
+    assert_eq!((ed.preedit(), ed.registration()), ("▽まよねーず", None));
+    assert!(ed.table.registered.is_empty());
+}
+
+#[test]
+fn 送りありの語を登録する() {
+    let mut ed = Editor::new(Table::new(&[]));
+    ed.type_keys("AE");
+    assert_eq!(ed.preedit(), "▼あえ");
+    assert_eq!(ed.registration().as_deref(), Some("[辞書登録] あ*え: "));
+    ed.type_keys("和<CR>");
+    assert_eq!((ed.buffer.as_str(), ed.preedit()), ("和え", ""));
+
+    ed.type_keys("AWa");
+    ed.type_keys("合わ<CR>");
+    assert_eq!(
+        ed.buffer, "和え合わ",
+        "送りがなまで打っても送りがなを重ねない"
+    );
+    assert_eq!(
+        ed.table.registered,
+        [
+            ("あe".to_string(), "和".to_string()),
+            ("あw".to_string(), "合".to_string())
+        ]
+    );
+    ed.type_keys("AE");
+    assert_eq!(ed.preedit(), "▼和え");
+}
+
+#[test]
+fn 登録中の_flush_は見出しをかなで確定する() {
+    let mut ed = Editor::new(Table::new(&[]));
+    ed.type_keys("Rinze<Space>ri");
+    let res = ed.session.flush();
+    assert_eq!((res.commit.as_str(), res.registration), ("りんぜ", None));
 }
 
 #[test]

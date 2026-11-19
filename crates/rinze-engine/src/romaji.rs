@@ -1,5 +1,3 @@
-//! ローマ字からひらがなへの変換。未確定のローマ字を 1 つ持ち、1 文字ずつ受け取る。
-
 #[rustfmt::skip]
 const TABLE: &[(&str, &str)] = &[
     ("a", "あ"), ("i", "い"), ("u", "う"), ("e", "え"), ("o", "お"),
@@ -71,7 +69,6 @@ impl Romaji {
         self.pending.is_empty()
     }
 
-    /// 1 文字受け取り、確定したかなを返す。表に無い文字はそのまま返す。
     pub fn feed(&mut self, c: char) -> String {
         let mut out = String::new();
         let mut joined = self.pending.clone();
@@ -96,7 +93,6 @@ impl Romaji {
         out
     }
 
-    /// 未確定のローマ字を打ち切る。`n` だけは「ん」として確定し、それ以外は捨てる。
     pub fn flush(&mut self) -> String {
         let out = if self.pending == "n" { "ん" } else { "" };
         self.pending.clear();

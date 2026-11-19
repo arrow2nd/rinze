@@ -1,6 +1,3 @@
--- rinze の Neovim フロントエンド。キーと左文脈を常駐プロセス rinzed へ送り、返ってきた確定文字列を挿入し、
--- 未確定文字列と候補一覧を表示するだけで、入力の状態は rinzed が持つ。
-
 local M = {}
 
 local config = {
@@ -27,6 +24,9 @@ local special_keys = {
 }
 
 local function default_socket()
+  if vim.fn.has('mac') == 1 then
+    return vim.env.HOME .. '/Library/Caches/rinze/rinze.sock'
+  end
   local dir = vim.env.XDG_RUNTIME_DIR
   if dir and dir ~= '' then
     return dir .. '/rinze.sock'
@@ -42,7 +42,8 @@ local function try_connect(path)
 end
 
 local function connect()
-  if state.chan then
+  -- 常駐プロセスが落ちて閉じた接続は情報が空になるので、つなぎ直す
+  if state.chan and next(vim.api.nvim_get_chan_info(state.chan)) then
     return state.chan
   end
   local path = config.socket or default_socket()
@@ -52,15 +53,15 @@ local function connect()
       error('rinze: ' .. path .. ' に接続できず、起動コマンド (cmd) も設定されていない')
     end
     local cmd = vim.list_extend(vim.deepcopy(config.cmd), { '--socket', path })
-    local exited, stderr = false, {}
+    local exit_code, stderr = nil, {}
     local job = vim.fn.jobstart(cmd, {
       detach = true,
       stderr_buffered = true,
       on_stderr = function(_, data)
         stderr = data
       end,
-      on_exit = function()
-        exited = true
+      on_exit = function(_, code)
+        exit_code = code
       end,
     })
     if job <= 0 then
@@ -68,14 +69,11 @@ local function connect()
     end
     vim.wait(config.startup_timeout, function()
       chan = try_connect(path)
-      return chan ~= nil or exited
+      return chan ~= nil or (exit_code ~= nil and exit_code ~= 0)
     end, 50)
     if not chan then
-      -- 既に別の常駐プロセスが動いていて、起動したものがすぐ終了した場合はつながる
-      chan = try_connect(path)
-    end
-    if not chan then
-      local reason = exited and ('終了した: ' .. table.concat(stderr, '\n'))
+      local reason = (exit_code ~= nil and exit_code ~= 0)
+          and ('終了した: ' .. vim.trim(table.concat(stderr, '\n')))
         or (config.startup_timeout .. 'ms 以内に待ち受けを始めなかった')
       error('rinze: 常駐プロセスが' .. reason)
     end
@@ -87,7 +85,6 @@ end
 local function request(method, ...)
   local ok, res = pcall(vim.rpcrequest, connect(), method, ...)
   if not ok then
-    -- 常駐プロセスが落ちていた場合に次のキーでつなぎ直せるよう、接続を捨てる
     state.chan = nil
     error(res)
   end
@@ -101,22 +98,40 @@ local function close_list()
   state.list_win = nil
 end
 
-local function show_list(candidates)
-  local parts = {}
-  for _, item in ipairs(candidates.items) do
-    table.insert(parts, item[1] .. ':' .. item[2])
+local function present(v)
+  return v ~= nil and v ~= vim.NIL
+end
+
+local function show_list(registration, candidates)
+  local lines = {}
+  if present(registration) then
+    table.insert(lines, registration.prompt .. registration.text .. registration.preedit)
   end
-  local line = table.concat(parts, '  ') .. string.format('  [%d/%d]', candidates.page + 1, candidates.pages)
+  if present(candidates) then
+    local parts = {}
+    for _, item in ipairs(candidates.items) do
+      table.insert(parts, item[1] .. ':' .. item[2])
+    end
+    table.insert(lines, table.concat(parts, '  ') .. string.format('  [%d/%d]', candidates.page + 1, candidates.pages))
+  end
+  if #lines == 0 then
+    close_list()
+    return
+  end
   if not (state.list_buf and vim.api.nvim_buf_is_valid(state.list_buf)) then
     state.list_buf = vim.api.nvim_create_buf(false, true)
   end
-  vim.api.nvim_buf_set_lines(state.list_buf, 0, -1, false, { line })
+  vim.api.nvim_buf_set_lines(state.list_buf, 0, -1, false, lines)
+  local width = 1
+  for _, line in ipairs(lines) do
+    width = math.max(width, vim.fn.strdisplaywidth(line))
+  end
   local opts = {
     relative = 'cursor',
     row = 1,
     col = 0,
-    width = vim.fn.strdisplaywidth(line),
-    height = 1,
+    width = width,
+    height = #lines,
     style = 'minimal',
     focusable = false,
   }
@@ -143,11 +158,7 @@ local function render(res)
       virt_text_pos = 'inline',
     })
   end
-  if res.candidates ~= vim.NIL and res.candidates ~= nil then
-    show_list(res.candidates)
-  else
-    close_list()
-  end
+  show_list(res.registration, res.candidates)
 end
 
 local function on_key(name, lhs)
