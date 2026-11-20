@@ -20,7 +20,17 @@ local instances = {
 
 for i, instance in ipairs(instances) do
   local socket = string.format('%s/%d.sock', work, i)
-  local cmd = { rinzed, '--model', model, '--dict', dict, '--user-dict', string.format('%s/%d.jisyo', work, i), '--socket', socket }
+  local cmd = {
+    rinzed,
+    '--model',
+    model,
+    '--dict',
+    dict,
+    '--user-dict',
+    string.format('%s/%d.jisyo', work, i),
+    '--socket',
+    socket,
+  }
   vim.list_extend(cmd, instance.args)
   local exited, stderr = false, {}
   instance.job = vim.fn.jobstart(cmd, {

@@ -77,15 +77,31 @@ local function blink_cmdline_enabled()
   return lua('return require("blink.cmp.config").cmdline.enabled')
 end
 
-check('rinze を使わない検索では blink.cmp のコマンドラインのメニューが出る', menu_after({ '/ec' }), { 'echoes' })
+check(
+  'rinze を使わない検索では blink.cmp のコマンドラインのメニューが出る',
+  menu_after({ '/ec' }),
+  { 'echoes' }
+)
 local menu, preedit = menu_after({ '/ec', '<C-j>', 'K', 'a' })
-check('コマンドラインで rinze が有効な間は、打鍵に反応して blink.cmp のメニューを出さない', { preedit, menu }, { '▽か', false })
+check(
+  'コマンドラインで rinze が有効な間は、打鍵に反応して blink.cmp のメニューを出さない',
+  { preedit, menu },
+  { '▽か', false }
+)
 check(': でも同じ', ({ menu_after({ ':ec', '<C-j>', 'K', 'a' }) })[1], false)
-check('コマンドラインを抜けると blink.cmp のメニューがまた出る', menu_after({ '/ec' }), { 'echoes' })
+check(
+  'コマンドラインを抜けると blink.cmp のメニューがまた出る',
+  menu_after({ '/ec' }),
+  { 'echoes' }
+)
 check('blink.cmp の設定の cmdline.enabled は元に戻る', blink_cmdline_enabled(), true)
 
 local ascii_menu, _, ascii_mode = menu_after({ '/', '<C-j>', 'l', 'ec' })
-check('ASCII モードの間は blink.cmp のメニューが出る', { ascii_mode, ascii_menu }, { 'ascii', { 'echoes' } })
+check(
+  'ASCII モードの間は blink.cmp のメニューが出る',
+  { ascii_mode, ascii_menu },
+  { 'ascii', { 'echoes' } }
+)
 local command_menu = menu_after({ ':', '<C-j>', 'l', 'ec' })
 check(
   ': の ASCII モードでもコマンドの補完のメニューが出る',

@@ -67,7 +67,10 @@ end
 local function float_text()
   for _, win in ipairs(vim.api.nvim_list_wins()) do
     local config = vim.api.nvim_win_get_config(win)
-    if config.relative ~= '' and vim.api.nvim_win_get_buf(win) ~= require('blink.cmp.completion.windows.menu').win:get_buf() then
+    if
+      config.relative ~= ''
+      and vim.api.nvim_win_get_buf(win) ~= require('blink.cmp.completion.windows.menu').win:get_buf()
+    then
       return table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false), '\n')
     end
   end
@@ -158,13 +161,25 @@ end
 local text, snaps
 if preset == 'enter-readme-override' then
   text, snaps = type_into('', 'Asita' .. wait_menu .. snap .. '<CR>' .. settle .. snap)
-  check('enter preset で Enter を上書きすると、メニュー表示中の Enter は読みのまま確定する', { snaps[1].menu ~= nil, text, snaps[2].menu }, { true, 'あした', nil })
+  check(
+    'enter preset で Enter を上書きすると、メニュー表示中の Enter は読みのまま確定する',
+    { snaps[1].menu ~= nil, text, snaps[2].menu },
+    { true, 'あした', nil }
+  )
   text = type_into('', 'Asita' .. wait_menu .. '<CR>ka')
-  check('fallback から呼ばれた rinze のキーも、続けて打ったキーと順序が入れ替わらない', text, 'あしたか')
+  check(
+    'fallback から呼ばれた rinze のキーも、続けて打ったキーと順序が入れ替わらない',
+    text,
+    'あしたか'
+  )
   finish()
 elseif preset == 'enter-unchanged' then
   text, snaps = type_into('', 'Asita' .. wait_menu .. snap .. '<CR>')
-  check('enter preset のままでは、メニュー表示中の Enter は先頭の候補を確定する', text, snaps[1].menu[1])
+  check(
+    'enter preset のままでは、メニュー表示中の Enter は先頭の候補を確定する',
+    text,
+    snaps[1].menu[1]
+  )
   finish()
 end
 
@@ -173,16 +188,28 @@ for _, case in ipairs({ { '', 'Asita' }, { '今日は', 'Asita' }, { 'この', '
   local _, snaps = type_into(line, keys .. wait_menu .. snap)
   local menu = snaps[1].menu or {}
   print(string.format('左文脈 %q の %s でのメニュー: %s', line, keys, table.concat(menu, ' ')))
-  check(string.format('左文脈 %q で %s と打つとメニューが出て、見出しは消えない', line, keys), { #menu > 2, snaps[1].preedit:sub(1, #'▽'), snaps[1].buffer }, { true, '▽', line })
+  check(
+    string.format('左文脈 %q で %s と打つとメニューが出て、見出しは消えない', line, keys),
+    { #menu > 2, snaps[1].preedit:sub(1, #'▽'), snaps[1].buffer },
+    { true, '▽', line }
+  )
   local order = converted_order(line, keys)
-  check(string.format('左文脈 %q の %s のメニューの並びは Space で送る並びと同じ', line, keys), menu, prefix(order, #menu))
+  check(
+    string.format('左文脈 %q の %s のメニューの並びは Space で送る並びと同じ', line, keys),
+    menu,
+    prefix(order, #menu)
+  )
 end
 
 _, snaps = type_into('', 'Asita' .. wait_menu .. snap)
 local menu = snaps[1].menu
 
 text, snaps = type_into('', 'Asita' .. wait_menu .. '<C-y>' .. settle .. snap)
-check('C-y で先頭の候補を確定し、見出しとメニューを消す', { text, snaps[1].preedit, snaps[1].menu }, { menu[1], '', nil })
+check(
+  'C-y で先頭の候補を確定し、見出しとメニューを消す',
+  { text, snaps[1].preedit, snaps[1].menu },
+  { menu[1], '', nil }
+)
 check('先頭の候補の確定は学習の履歴に書かない', in_history('あした\t'), false)
 
 text, snaps = type_into('', 'Asita' .. wait_menu .. '<C-n>' .. settle .. snap .. '<C-y>' .. settle .. snap)
@@ -191,7 +218,11 @@ check('C-y で 2 番目の候補を確定する', { text, snaps[2].preedit, snap
 check('先頭以外の候補の確定は学習の履歴に書く', in_history('あした\t' .. menu[2] .. '\t'), true)
 
 _, snaps = type_into('', 'Asita' .. wait_menu .. snap)
-check('学習したあとのメニューの並びも Space で送る並びと同じ', snaps[1].menu, prefix(converted_order('', 'Asita'), #snaps[1].menu))
+check(
+  '学習したあとのメニューの並びも Space で送る並びと同じ',
+  snaps[1].menu,
+  prefix(converted_order('', 'Asita'), #snaps[1].menu)
+)
 local asita = snaps[1].menu[1]
 
 local function menu_of(keys)
@@ -201,7 +232,11 @@ end
 
 local kanji = menu_of('Kanji')
 text = type_into('', 'Kanji' .. wait_menu .. '<C-n>' .. settle .. 'ha')
-check('C-n で仮に入れたあと文字を打つと、選んだ候補を確定してからその文字を処理する', text, kanji[2] .. 'は')
+check(
+  'C-n で仮に入れたあと文字を打つと、選んだ候補を確定してからその文字を処理する',
+  text,
+  kanji[2] .. 'は'
+)
 kanji = menu_of('Kanji')
 text = type_into('', 'Kanji' .. wait_menu .. '<C-n>ha')
 check('C-n の直後に間を空けずに打っても同じ', text, kanji[2] .. 'は')
@@ -219,12 +254,24 @@ text = type_into('', 'Kanji' .. wait_menu .. '<C-y>Asita<Space><CR>')
 check('C-y の直後に間を空けずに打った見出しと変換も失わない', text, kanji[1] .. asita)
 
 text, snaps = type_into('', 'Asita' .. wait_menu .. '<CR>' .. settle .. snap)
-check('default preset のメニュー表示中の Enter は読みのまま確定し、改行しない', { text, snaps[1].menu }, { 'あした', nil })
+check(
+  'default preset のメニュー表示中の Enter は読みのまま確定し、改行しない',
+  { text, snaps[1].menu },
+  { 'あした', nil }
+)
 text, snaps = type_into('', 'Asita' .. wait_menu .. '<Space>' .. settle .. snap)
-check('default preset のメニュー表示中の Space は変換を始め、メニューを閉じる', { snaps[1].preedit, snaps[1].menu }, { '▼' .. asita, nil })
+check(
+  'default preset のメニュー表示中の Space は変換を始め、メニューを閉じる',
+  { snaps[1].preedit, snaps[1].menu },
+  { '▼' .. asita, nil }
+)
 
 _, snaps = type_into('', 'AT' .. settle .. snap)
-check('送りがなの入力中はメニューを出さない', { snaps[1].preedit, snaps[1].menu }, { '▽あ*t', nil })
+check(
+  '送りがなの入力中はメニューを出さない',
+  { snaps[1].preedit, snaps[1].menu },
+  { '▽あ*t', nil }
+)
 
 local press = rinze._press
 local key_ms
@@ -242,10 +289,18 @@ end
 
 key_ms = {}
 text, snaps = type_into('', 'Asitanoasa' .. snap)
-check('一気に打っても打鍵の順序が入れ替わらない', { snaps[1].preedit, snaps[1].buffer }, { '▽あしたのあさ', '' })
+check(
+  '一気に打っても打鍵の順序が入れ替わらない',
+  { snaps[1].preedit, snaps[1].buffer },
+  { '▽あしたのあさ', '' }
+)
 text, snaps = type_into('', 'Nihongonyuuryoku' .. snap .. wait_menu .. snap)
 local burst_ms = (snaps[2].at - snaps[1].at) / 1e6
-check('一気に打ったあとのメニューは最後の読みの候補', { snaps[1].preedit, snaps[2].menu }, { '▽にほんごにゅうりょく', { '日本語入力' } })
+check(
+  '一気に打ったあとのメニューは最後の読みの候補',
+  { snaps[1].preedit, snaps[2].menu },
+  { '▽にほんごにゅうりょく', { '日本語入力' } }
+)
 print(string.format('一気に打ち終えてから最後の読みのメニューが出るまで: %.1fms', burst_ms))
 
 local function measure(label, before_space)
@@ -264,7 +319,17 @@ local function measure(label, before_space)
   end
   local typing_median, typing_max = median(typing)
   local space_median = median(spaces)
-  print(string.format('%s: 見出しの打鍵 %d 回の中央値 %.2fms 最大 %.2fms、Space %d 回の中央値 %.2fms', label, #typing, typing_median, typing_max, #spaces, space_median))
+  print(
+    string.format(
+      '%s: 見出しの打鍵 %d 回の中央値 %.2fms 最大 %.2fms、Space %d 回の中央値 %.2fms',
+      label,
+      #typing,
+      typing_median,
+      typing_max,
+      #spaces,
+      space_median
+    )
+  )
   return typing_median, space_median
 end
 local with_blink, space_after_menu = measure('連携あり', wait_menu)
@@ -272,8 +337,16 @@ vim.cmd('RinzeDisable')
 rinze.setup({ cmd = cmd, socket = socket, blink = false })
 vim.cmd('RinzeEnable')
 local without_blink, space_without_menu = measure('連携なし', '<Cmd>lua T.wait(100)<CR>')
-check('連携ありでも 1 打鍵の処理は候補の問い合わせ (数 ms 以上) を待たない', with_blink < 2, true)
-check('メニューを出したあとの Space は点数づけを待たない', space_after_menu < space_without_menu, true)
+check(
+  '連携ありでも 1 打鍵の処理は候補の問い合わせ (数 ms 以上) を待たない',
+  with_blink < 2,
+  true
+)
+check(
+  'メニューを出したあとの Space は点数づけを待たない',
+  space_after_menu < space_without_menu,
+  true
+)
 rinze._press = press
 
 finish()

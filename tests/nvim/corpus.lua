@@ -18,7 +18,7 @@ local MAX_SPACES = 60
 
 -- headless の Neovim の print は挿入モードの間に改行を落とすことがあるので、標準出力へ直接書く
 local function say(fmt, ...)
-  io.stdout:write(string.format(fmt, ...), "\n")
+  io.stdout:write(string.format(fmt, ...), '\n')
 end
 
 local function parse_line(line)

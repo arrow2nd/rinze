@@ -42,7 +42,13 @@ local function connect(session)
   local chan = try_connect(path)
   if not chan then
     if vim.fn.executable(config.cmd[1]) ~= 1 then
-      error('rinze: ' .. path .. ' に接続できず、起動コマンド ' .. config.cmd[1] .. ' も見つからない (setup の cmd で指定する)')
+      error(
+        'rinze: '
+          .. path
+          .. ' に接続できず、起動コマンド '
+          .. config.cmd[1]
+          .. ' も見つからない (setup の cmd で指定する)'
+      )
     end
     local cmd = vim.list_extend(vim.deepcopy(config.cmd), { '--socket', path })
     local exit_code, stderr = nil, {}
@@ -67,8 +73,7 @@ local function connect(session)
       return chan ~= nil or failed_to_start()
     end, 50)
     if not chan then
-      local reason = failed_to_start()
-          and ('終了した: ' .. vim.trim(table.concat(stderr, '\n')))
+      local reason = failed_to_start() and ('終了した: ' .. vim.trim(table.concat(stderr, '\n')))
         or (config.startup_timeout .. 'ms 以内に待ち受けを始めなかった')
       error('rinze: 常駐プロセスが' .. reason)
     end

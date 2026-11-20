@@ -139,12 +139,24 @@ local global_before = lua('return T.imaps()')
 
 fresh()
 type_keys('i<C-j>ka' .. snap .. '<Esc>')
-check('利用者の <C-j> で有効になり、かなを打てる', lua('return T.snaps[1]'), { preedit = '', text = 'か', mode = 'hiragana' })
-check('挿入モードを抜けると、rinze のキーマップはどこにも残らない', lua('return T.rinze_maps()'), {})
+check(
+  '利用者の <C-j> で有効になり、かなを打てる',
+  lua('return T.snaps[1]'),
+  { preedit = '', text = 'か', mode = 'hiragana' }
+)
+check(
+  '挿入モードを抜けると、rinze のキーマップはどこにも残らない',
+  lua('return T.rinze_maps()'),
+  {}
+)
 check('有効な間も global な割り当ては有効にする前と同じ', lua('return T.imaps()'), global_before)
 
 lua('vim.cmd("RinzeDisable")')
-check(':RinzeDisable のあと global な割り当ては有効にする前と同じ', lua('return T.imaps()'), global_before)
+check(
+  ':RinzeDisable のあと global な割り当ては有効にする前と同じ',
+  lua('return T.imaps()'),
+  global_before
+)
 fresh()
 type_keys('i(<Esc>')
 check(':RinzeDisable のあと、ほかのプラグインの global な expr マップが働く', text(), '()')
@@ -175,14 +187,26 @@ local markdown = fresh({ '' }, 'markdown')
 lua('vim.bo.bufhidden = "hide"')
 local markdown_maps = lua('return T.imaps(...)', markdown)
 type_keys('iKanji<Space>><Esc>')
-check('バッファローカルの > があっても、Kanji<Space>> は素のバッファと同じになる', text(), plain)
-check('有効な間に挿入モードを抜けると、バッファローカルの割り当ては元に戻る', lua('return T.imaps(...)', markdown), markdown_maps)
+check(
+  'バッファローカルの > があっても、Kanji<Space>> は素のバッファと同じになる',
+  text(),
+  plain
+)
+check(
+  '有効な間に挿入モードを抜けると、バッファローカルの割り当ては元に戻る',
+  lua('return T.imaps(...)', markdown),
+  markdown_maps
+)
 
 lua('vim.cmd("RinzeDisable")')
 lua('T.events = {}')
 type_keys('o><Esc>')
 check(':RinzeDisable のあと、バッファローカルの > が働く', lua('return T.events'), { 'autotag >' })
-check(':RinzeDisable のあと、バッファローカルの割り当ては有効にする前と同じ', lua('return T.imaps(...)', markdown), markdown_maps)
+check(
+  ':RinzeDisable のあと、バッファローカルの割り当ては有効にする前と同じ',
+  lua('return T.imaps(...)', markdown),
+  markdown_maps
+)
 
 fresh()
 lua('vim.b.llama = true')
@@ -195,35 +219,77 @@ local converted = vim.wait(3000, function()
 end, 5)
 local space_ms = (vim.uv.hrtime() - started) / 1e6
 type_keys('<Esc>')
-print(string.format('  バッファローカルの <Space>llf があるときの Kanji<Space> から変換が出るまで: %.0fms', space_ms))
-check('同じ文字で始まる長い割り当てがあっても、Space は timeoutlen (1000ms) を待たずに変換する', converted and space_ms < 500, true)
+print(
+  string.format(
+    '  バッファローカルの <Space>llf があるときの Kanji<Space> から変換が出るまで: %.0fms',
+    space_ms
+  )
+)
+check(
+  '同じ文字で始まる長い割り当てがあっても、Space は timeoutlen (1000ms) を待たずに変換する',
+  converted and space_ms < 500,
+  true
+)
 
 local first = fresh({ '' }, 'markdown')
 lua('vim.bo.bufhidden = "hide"')
 type_keys('i' .. snap)
 local second = lua('local b = vim.api.nvim_create_buf(true, false) vim.bo[b].bufhidden = "wipe" return b')
 type_keys('ka<Cmd>buffer ' .. second .. '<CR>sa' .. snap .. '<Cmd>lua T.first_maps = T.imaps(' .. first .. ')<CR><Esc>')
-check('挿入モードのまま別のバッファへ移っても rinze に届く', lua('return { vim.api.nvim_get_current_line(), T.snaps[2].mode }'), { 'さ', 'hiragana' })
-check('移る前のバッファに打った分はそのまま残る', lua('return vim.api.nvim_buf_get_lines(..., 0, -1, false)', first), { 'か' })
-check('挿入モードのまま移ると、移る前のバッファのバッファローカルの割り当ては元に戻る', lua('return T.first_maps'), { ['>'] = 'autotag >' })
+check(
+  '挿入モードのまま別のバッファへ移っても rinze に届く',
+  lua('return { vim.api.nvim_get_current_line(), T.snaps[2].mode }'),
+  { 'さ', 'hiragana' }
+)
+check(
+  '移る前のバッファに打った分はそのまま残る',
+  lua('return vim.api.nvim_buf_get_lines(..., 0, -1, false)', first),
+  { 'か' }
+)
+check(
+  '挿入モードのまま移ると、移る前のバッファのバッファローカルの割り当ては元に戻る',
+  lua('return T.first_maps'),
+  { ['>'] = 'autotag >' }
+)
 type_keys('i<Cmd>bwipeout!<CR>ta<Esc>')
-check('挿入モードのままバッファを閉じても、戻ったバッファで rinze に届く', lua('return { vim.api.nvim_get_current_buf(), T.text() }'), { first, 'かた' })
-check('バッファを渡り歩いたあと、rinze のキーマップはどこにも残らない', lua('return T.rinze_maps()'), {})
+check(
+  '挿入モードのままバッファを閉じても、戻ったバッファで rinze に届く',
+  lua('return { vim.api.nvim_get_current_buf(), T.text() }'),
+  { first, 'かた' }
+)
+check(
+  'バッファを渡り歩いたあと、rinze のキーマップはどこにも残らない',
+  lua('return T.rinze_maps()'),
+  {}
+)
 
 local prompt = fresh()
-lua([[
+lua(
+  [[
 local buf = ...
 vim.keymap.set('i', '<CR>', '<Cmd>lua table.insert(T.events, "picker CR")<CR>', { buffer = buf, desc = 'picker <CR>' })
 vim.keymap.set('i', '<Esc>', '<Cmd>lua table.insert(T.events, "picker Esc")<CR>', { buffer = buf, desc = 'picker <Esc>' })
-]], prompt)
+]],
+  prompt
+)
 type_keys('iAsita<CR>' .. snap .. '<CR>')
-check('見出しの入力中の Enter は rinze が読みのまま確定し、バッファローカルの <CR> に渡さない', { lua('return T.snaps[1].text'), lua('return T.events') }, { 'あした', { 'picker CR' } })
+check(
+  '見出しの入力中の Enter は rinze が読みのまま確定し、バッファローカルの <CR> に渡さない',
+  { lua('return T.snaps[1].text'), lua('return T.events') },
+  { 'あした', { 'picker CR' } }
+)
 type_keys('<Esc>')
-check('rinze が処理しない Enter と Esc はバッファローカルの割り当てに渡す', lua('return T.events'), { 'picker CR', 'picker Esc' })
+check(
+  'rinze が処理しない Enter と Esc はバッファローカルの割り当てに渡す',
+  lua('return T.events'),
+  { 'picker CR', 'picker Esc' }
+)
 type_keys('<C-\\><C-n>')
 
 fresh()
-lua('vim.bo.buftype = "prompt" T.submitted = {} vim.fn.prompt_setcallback(vim.api.nvim_get_current_buf(), function(line) table.insert(T.submitted, line) end)')
+lua(
+  'vim.bo.buftype = "prompt" T.submitted = {} vim.fn.prompt_setcallback(vim.api.nvim_get_current_buf(), function(line) table.insert(T.submitted, line) end)'
+)
 type_keys('aka<CR><Esc>')
 check('prompt バッファでも打てて、Enter で送れる', lua('return T.submitted'), { 'か' })
 
@@ -232,7 +298,11 @@ for _, toggle in ipairs({ 'vim.cmd("RinzeToggle")', 'require("rinze").toggle()' 
   lua(toggle)
   type_keys('i<Esc>')
   lua(toggle)
-  check(toggle .. ' を 2 回呼んだあと、割り当ては呼ぶ前と同じ', { lua('return T.imaps()'), lua('return T.imaps(...)', markdown) }, before_toggle)
+  check(
+    toggle .. ' を 2 回呼んだあと、割り当ては呼ぶ前と同じ',
+    { lua('return T.imaps()'), lua('return T.imaps(...)', markdown) },
+    before_toggle
+  )
 end
 check('最後に有効にする前と global な割り当てが同じ', lua('return T.imaps()'), global_before)
 
