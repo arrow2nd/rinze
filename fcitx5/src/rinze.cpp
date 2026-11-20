@@ -513,6 +513,10 @@ bool RinzeState::apply(RinzeResponse *raw) {
         auto failure = rinze_client_failure(client_.get(), &message);
         RINZE_WARN() << message;
         notice_ = message;
+        if (failure == RINZE_FAILURE_DELAYED) {
+            render();
+            return true;
+        }
         shown_.reset();
         render();
         if (failure == RINZE_FAILURE_STARTING) {

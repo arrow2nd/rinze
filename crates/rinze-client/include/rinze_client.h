@@ -28,7 +28,10 @@ typedef enum {
   // rinzed を起動中で、要求を処理していない。`rinze_service_poll` で待ち受けを始めたかを確かめる。
   RINZE_FAILURE_STARTING,
   RINZE_FAILURE_UNAVAILABLE,
-  // 接続が切れたか応答が無く、rinzed 側の入力状態は失われた。
+  // 時間内に応答が無かったが、要求は rinzed に届いていて入力状態も残っている。表示はそのままにし、打鍵はアプリへ通さない。
+  // 応答は次の要求の前に読む。そのときも応答が無ければ、入力状態を捨てて Lost を返す。
+  RINZE_FAILURE_DELAYED,
+  // 接続が切れたか応答を待ち切れず、rinzed 側の入力状態は失われた。
   RINZE_FAILURE_LOST,
 } RinzeFailure;
 
@@ -51,7 +54,7 @@ extern "C" {
 #endif // __cplusplus
 
 // `socket` が NULL なら既定のソケット。`program` は接続できなかったときに `--socket` を付けて起動する rinzed で、NULL なら起動しない。
-// `prefetch` が true なら、見出しの読みが変わるたびに別の接続で候補を問い合わせ、Space での変換の待ちを隠す。
+// `prefetch` が true なら、見出しの読みが変わって少しの間そのままなら別の接続で候補を問い合わせ、Space での変換の待ちを隠す。
 // 既定のソケットを決められなければ NULL を返す。
 RinzeService *rinze_service_new(const char *socket,
                                 const char *program,

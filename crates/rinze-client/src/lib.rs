@@ -14,6 +14,7 @@ pub mod ffi;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use rmpv::Value;
@@ -27,8 +28,10 @@ use launch::{Blocked, Launcher};
 use prefetch::Prefetcher;
 use rpc::{CallError, Connection};
 
-// 超えたら打鍵をそのままアプリに通し、fcitx5 全体を固まらせない
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
+// 待つ間は fcitx5 全体が固まる。CPU が詰まっていても変換を待てて、止まった rinzed からはいずれ抜けられる長さにする
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+// 一度待ち切れなかったあとは、応答が来るまで短く待つ。止まった rinzed に打鍵のたびに長く固まらない
+const STALLED_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_SWITCH_KEYS: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,7 +40,10 @@ pub enum Error {
     Starting,
     /// 接続できず、起動もできなかった。
     Unavailable(String),
-    /// 接続が切れたか、時間内に応答が無かった。rinzed 側の入力状態は失われた。
+    /// 時間内に応答が無かったが、要求は rinzed に届いていて入力状態も残っている。
+    /// 表示はそのままにする。応答は次の要求の前に読み、その確定文字列は次の応答の `commit` に含める。
+    Delayed(String),
+    /// 接続が切れたか、応答を待ち切れずに諦めた。rinzed 側の入力状態は失われた。
     Lost(String),
 }
 
@@ -45,7 +51,9 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Starting => write!(f, "rinzed を起動しています"),
-            Error::Unavailable(reason) | Error::Lost(reason) => write!(f, "{reason}"),
+            Error::Unavailable(reason) | Error::Delayed(reason) | Error::Lost(reason) => {
+                write!(f, "{reason}")
+            }
         }
     }
 }
@@ -61,6 +69,8 @@ pub struct Service {
     socket: PathBuf,
     launcher: Launcher,
     prefetcher: Option<Prefetcher>,
+    // どれかの接続で応答を待ち切れず、そのあとまだどの応答も受け取っていない
+    stalled: AtomicBool,
 }
 
 pub struct Options {
@@ -81,6 +91,7 @@ impl Service {
             launcher: Launcher::new(options.program, socket.clone()),
             prefetcher: options.prefetch.then(|| Prefetcher::new(socket.clone())),
             socket,
+            stalled: AtomicBool::new(false),
         }))
     }
 
@@ -113,6 +124,8 @@ pub struct Client {
     trail: PreeditTrail,
     prefetched: Option<String>,
     last_left_context: Option<LeftContext>,
+    // 待ち切れなかった応答で rinzed が確定したもの。次に返す応答の `commit` の前に付ける
+    late_commit: String,
 }
 
 impl Client {
@@ -123,6 +136,7 @@ impl Client {
             trail: PreeditTrail::default(),
             prefetched: None,
             last_left_context: None,
+            late_commit: String::new(),
         }
     }
 
@@ -155,7 +169,13 @@ impl Client {
             let Some(key) = switch_key(response.mode, target) else {
                 break;
             };
-            response = self.call("key", vec![key.into(), "".into()])?;
+            response = match self.call("key", vec![key.into(), "".into()]) {
+                Ok(response) => response,
+                Err(e) => {
+                    self.late_commit.insert_str(0, &commit);
+                    return Err(e);
+                }
+            };
             commit.push_str(&response.commit);
         }
         response.commit = commit;
@@ -166,11 +186,14 @@ impl Client {
         self.last_left_context.as_ref()
     }
 
-    // 失敗したときは rinzed 側の入力状態が無いか失われていて、フロントエンドも未確定文字列を消す
+    // Delayed のときは表示を変えない。ほかの失敗では rinzed 側の入力状態が無いか失われていて、フロントエンドも未確定文字列を消す
     fn call(&mut self, method: &str, params: Vec<Value>) -> Result<Response, Error> {
         let result = self.exchange(method, params);
-        self.trail
-            .displayed(result.as_ref().map_or("", |r| r.preedit.as_str()));
+        match &result {
+            Ok(response) => self.trail.displayed(&response.preedit),
+            Err(Error::Delayed(_)) => {}
+            Err(_) => self.trail.displayed(""),
+        }
         result
     }
 
@@ -179,14 +202,44 @@ impl Client {
             Some(c) => c,
             None => self.connection.insert(self.service.connect()?),
         };
-        let result = connection.call(method, params);
-        let value = match result {
+        if connection.has_unanswered() {
+            let replies = match connection.settle(STALLED_TIMEOUT) {
+                Ok(replies) => replies,
+                Err(e) => {
+                    self.connection = None;
+                    return Err(Error::Lost(match e {
+                        CallError::Broken(e) => format!("rinzed との接続が切れた: {e}"),
+                        _ => "rinzed が応答しないので、入力途中のものを捨てた".into(),
+                    }));
+                }
+            };
+            self.service.stalled.store(false, Ordering::Relaxed);
+            for reply in replies.iter().flatten() {
+                if let Ok(late) = Response::parse(reply) {
+                    self.late_commit.push_str(&late.commit);
+                }
+            }
+        }
+        let stalled = self.service.stalled.load(Ordering::Relaxed);
+        let timeout = if stalled {
+            STALLED_TIMEOUT
+        } else {
+            REQUEST_TIMEOUT
+        };
+        let value = match connection.call(method, params, timeout) {
             Ok(value) => value,
+            Err(CallError::NoResponse) if !stalled => {
+                self.service.stalled.store(true, Ordering::Relaxed);
+                return Err(Error::Delayed(format!(
+                    "rinzed が {} 秒以内に応答しなかった。入力途中のものは残してあり、次の打鍵で応答を待ち直す",
+                    timeout.as_secs()
+                )));
+            }
             Err(CallError::NoResponse) => {
                 self.connection = None;
                 return Err(Error::Lost(format!(
                     "rinzed が {} 秒以内に応答しなかった",
-                    REQUEST_TIMEOUT.as_secs()
+                    timeout.as_secs()
                 )));
             }
             Err(CallError::Broken(e)) => {
@@ -197,10 +250,15 @@ impl Client {
                 return Err(Error::Lost(format!("rinzed が要求を受け付けなかった: {e}")));
             }
         };
-        Response::parse(&value).map_err(|e| {
+        self.service.stalled.store(false, Ordering::Relaxed);
+        let mut response = Response::parse(&value).map_err(|e| {
             self.connection = None;
             Error::Lost(format!("rinzed の応答を読めない: {e}"))
-        })
+        })?;
+        response
+            .commit
+            .insert_str(0, &std::mem::take(&mut self.late_commit));
+        Ok(response)
     }
 
     fn prefetch(&mut self, response: &Response, left_context: &str) {

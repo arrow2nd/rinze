@@ -384,7 +384,7 @@ void typing(Instance *instance) {
         }
     }
 
-    // ASCII モードでは ctrl-j 以外を rinzed に送らない。止めた rinzed に送れば 1 秒待つので、待たないことで確かめる
+    // ASCII モードでは ctrl-j 以外を rinzed に送らない。止めた rinzed に送れば待つので、待たないことで確かめる
     auto rinzedPid = env("RINZE_TEST_RINZED_PID");
     FCITX_ASSERT(kill(std::stoi(rinzedPid), SIGSTOP) == 0);
     for (const char *key : {"a", "A", "space", "Return", "BackSpace", "Escape", "Control+g"}) {
@@ -513,6 +513,50 @@ void typing(Instance *instance) {
     FCITX_INFO() << "rinzed のソケット: 入力欄 10 個で " << before << " から " << opened
                  << "、閉じて " << closed;
 
+    // 応答が遅くても 10 秒までは待って変換する
+    auto pid = std::stoi(rinzedPid);
+    auto resumeAfter = [pid](int millis) {
+        return std::thread([pid, millis] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(millis));
+            kill(pid, SIGCONT);
+        });
+    };
+    t.type("Asita");
+    FCITX_ASSERT(kill(pid, SIGSTOP) == 0);
+    auto resume = resumeAfter(1500);
+    FCITX_ASSERT(t.press("space"));
+    resume.join();
+    FCITX_INFO() << "1.5 秒止めた rinzed: Space " << t.lastMillis << " ms";
+    FCITX_ASSERT(t.preedit() == "▼明日" && t.lastMillis > 1400)
+        << t.preedit() << " " << t.lastMillis << " ms";
+
+    // 10 秒待っても応答が無ければ、未確定文字列を残し、打鍵はアプリへ通さない。ほかの入力欄はその後 1 秒で諦める
+    FCITX_ASSERT(kill(pid, SIGSTOP) == 0);
+    FCITX_ASSERT(t.press("Return"));
+    FCITX_INFO() << "止めた rinzed: Return " << t.lastMillis << " ms";
+    FCITX_ASSERT(t.lastMillis > 9900 && t.lastMillis < 11000) << t.lastMillis;
+    FCITX_ASSERT(t.preedit() == "▼明日") << t.preedit();
+    FCITX_ASSERT(t.auxUp() == "rinze: rinzed が 10 秒以内に応答しなかった。入力途中のものは残してあり、"
+                              "次の打鍵で応答を待ち直す")
+        << t.auxUp();
+    Typist stalled(instance, "stalled");
+    stalled.enableRinze();
+    FCITX_ASSERT(stalled.lastMillis < 1500) << stalled.lastMillis;
+    // fcitx5 5.1.19 は有効にした直後のパネルの上段に入力メソッドの名前を出すので、知らせは次の打鍵で確かめる
+    FCITX_ASSERT(!stalled.press("a")) << "打鍵はアプリへ通す";
+    FCITX_ASSERT(stalled.lastMillis < 1500) << stalled.lastMillis;
+    FCITX_ASSERT(stalled.auxUp() == "rinze: rinzed が 1 秒以内に応答しなかった") << stalled.auxUp();
+    stalled.destroy();
+
+    // rinzed が戻れば、次の打鍵で遅れた応答を読み、そこで確定したものも失わない
+    resume = resumeAfter(300);
+    t.expectCommit("明日あ");
+    FCITX_ASSERT(t.press("a"));
+    resume.join();
+    FCITX_ASSERT(t.lastMillis < 1000) << t.lastMillis;
+    FCITX_ASSERT(t.preedit().empty() && t.auxUp().rfind("rinze:", 0) != 0)
+        << t.preedit() << " " << t.auxUp();
+
     keys.report();
     spaces.report();
     t.destroy();
@@ -620,11 +664,15 @@ void unresponsive(Instance *instance) {
     Typist t(instance);
     t.enableRinze();
     FCITX_INFO() << "応答しない rinzed: rinze を有効にする打鍵 " << t.lastMillis << " ms";
-    FCITX_ASSERT(t.lastMillis > 900 && t.lastMillis < 2000) << t.lastMillis;
-    FCITX_ASSERT(!t.press("a")) << "打鍵はアプリへ通す";
-    FCITX_INFO() << "応答しない rinzed: 打鍵 " << t.lastMillis << " ms";
-    FCITX_ASSERT(t.lastMillis > 900 && t.lastMillis < 2000) << t.lastMillis;
-    FCITX_ASSERT(t.auxUp() == "rinze: rinzed が 1 秒以内に応答しなかった") << t.auxUp();
+    FCITX_ASSERT(t.lastMillis > 9900 && t.lastMillis < 11000) << t.lastMillis;
+    // 一度待ち切れなかったあとは、打鍵ごとに 1 秒で諦めてアプリへ通す
+    for (const char *notice : {"rinzed が応答しないので、入力途中のものを捨てた",
+                               "rinzed が 1 秒以内に応答しなかった"}) {
+        FCITX_ASSERT(!t.press("a")) << "打鍵はアプリへ通す";
+        FCITX_INFO() << "応答しない rinzed: 打鍵 " << t.lastMillis << " ms";
+        FCITX_ASSERT(t.lastMillis > 900 && t.lastMillis < 2000) << t.lastMillis;
+        FCITX_ASSERT(t.auxUp() == std::string("rinze: ") + notice) << t.auxUp();
+    }
     t.destroy();
     close(server);
     instance->exit();

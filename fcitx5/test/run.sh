@@ -29,6 +29,10 @@ wait_for_socket() {
 typing_rinzed=$!
 wait_for_socket "$dir/t.sock"
 
+# 応答を待ち切るまで 10 秒かかる場面は、ほかの場面と並べて走らせる
+RINZE_SOCKET=$dir/u.sock RINZE_RINZED=$dir/not-launched "$testrinze" unresponsive >"$dir/u.log" 2>&1 &
+unresponsive=$!
+
 echo "--- 打鍵"
 RINZE_SOCKET=$dir/t.sock RINZE_RINZED=$dir/not-launched RINZE_FCITX_DEBUG=1 \
   RINZE_TEST_HISTORY=$dir/t-history.tsv RINZE_TEST_RINZED_PID=$typing_rinzed \
@@ -59,4 +63,7 @@ XDG_STATE_HOME=$dir/f-state XDG_DATA_HOME=$dir/f-data RINZE_SOCKET=$dir/f.sock R
   "$testrinze" failing
 
 echo "--- rinzed が応答しない"
-RINZE_SOCKET=$dir/u.sock RINZE_RINZED=$dir/not-launched "$testrinze" unresponsive
+status=0
+wait "$unresponsive" || status=$?
+cat "$dir/u.log"
+exit "$status"

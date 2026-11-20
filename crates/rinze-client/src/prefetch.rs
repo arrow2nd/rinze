@@ -8,8 +8,10 @@ use std::time::Duration;
 use crate::rpc::Connection;
 
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
+// rinzed の点数づけは 1 つずつしか走らないので、打っている途中の読みの点数づけで Space での変換を待たせない
+const SETTLE: Duration = Duration::from_millis(200);
 
-// 見出しの読みが変わるたびに、キーを送る接続とは別の接続で `lookup` を投げる。
+// 見出しの読みが変わって SETTLE の間そのままなら、キーを送る接続とは別の接続で `lookup` を投げる。
 // rinzed は最後につけた点数を覚えているので、直後に同じ読みを Space で変換すると並べ替えを待たない。
 // 応答は使わず、問い合わせの途中に来たものは最新の 1 件だけ残す。rinzed が動いていなければ何もしない。
 pub(crate) struct Prefetcher {
@@ -85,15 +87,25 @@ impl Shared {
     fn next(&self) -> Option<(String, String)> {
         let mut queue = lock(&self.queue);
         loop {
-            match std::mem::replace(&mut *queue, Queue::Empty) {
-                Queue::Pending {
-                    reading,
-                    left_context,
-                } => return Some((reading, left_context)),
-                Queue::Closed => {
-                    *queue = Queue::Closed;
-                    return None;
+            match &*queue {
+                Queue::Pending { .. } => {
+                    let (guard, waited) = self
+                        .wake
+                        .wait_timeout(queue, SETTLE)
+                        .unwrap_or_else(|e| e.into_inner());
+                    queue = guard;
+                    if !waited.timed_out() {
+                        continue;
+                    }
+                    match std::mem::replace(&mut *queue, Queue::Empty) {
+                        Queue::Pending {
+                            reading,
+                            left_context,
+                        } => return Some((reading, left_context)),
+                        other => *queue = other,
+                    }
                 }
+                Queue::Closed => return None,
                 Queue::Empty => queue = self.wake.wait(queue).unwrap_or_else(|e| e.into_inner()),
             }
         }
@@ -111,8 +123,12 @@ impl Shared {
             let Some(c) = connection.as_mut() else {
                 continue;
             };
-            if c.call("lookup", vec![reading.into(), left_context.into()])
-                .is_err()
+            if c.call(
+                "lookup",
+                vec![reading.into(), left_context.into()],
+                LOOKUP_TIMEOUT,
+            )
+            .is_err()
             {
                 connection = None;
             }

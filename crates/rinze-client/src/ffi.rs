@@ -44,7 +44,10 @@ pub enum RinzeFailure {
     /// rinzed を起動中で、要求を処理していない。`rinze_service_poll` で待ち受けを始めたかを確かめる。
     Starting,
     Unavailable,
-    /// 接続が切れたか応答が無く、rinzed 側の入力状態は失われた。
+    /// 時間内に応答が無かったが、要求は rinzed に届いていて入力状態も残っている。表示はそのままにし、打鍵はアプリへ通さない。
+    /// 応答は次の要求の前に読む。そのときも応答が無ければ、入力状態を捨てて Lost を返す。
+    Delayed,
+    /// 接続が切れたか応答を待ち切れず、rinzed 側の入力状態は失われた。
     Lost,
 }
 
@@ -135,7 +138,7 @@ impl From<Response> for RinzeResponse {
 }
 
 /// `socket` が NULL なら既定のソケット。`program` は接続できなかったときに `--socket` を付けて起動する rinzed で、NULL なら起動しない。
-/// `prefetch` が true なら、見出しの読みが変わるたびに別の接続で候補を問い合わせ、Space での変換の待ちを隠す。
+/// `prefetch` が true なら、見出しの読みが変わって少しの間そのままなら別の接続で候補を問い合わせ、Space での変換の待ちを隠す。
 /// 既定のソケットを決められなければ NULL を返す。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rinze_service_new(
@@ -222,6 +225,7 @@ fn finish(client: &mut RinzeClient, result: Result<Response, Error>) -> *mut Rin
         Ok(_) => (RinzeFailure::None, String::new()),
         Err(e @ Error::Starting) => (RinzeFailure::Starting, e.to_string()),
         Err(e @ Error::Unavailable(_)) => (RinzeFailure::Unavailable, e.to_string()),
+        Err(e @ Error::Delayed(_)) => (RinzeFailure::Delayed, e.to_string()),
         Err(e @ Error::Lost(_)) => (RinzeFailure::Lost, e.to_string()),
     };
     client.failure = failure;

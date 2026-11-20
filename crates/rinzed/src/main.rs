@@ -176,7 +176,27 @@ fn lock_socket(socket: &Path) -> Result<Option<File>, String> {
 
 struct AnotherRinzedServes;
 
+// libgomp の既定では待つスレッドが CPU を回し続け、CPU が詰まっているときの点数づけが何十倍も遅くなる。
+// 待ち方は libgomp が起動時に読む環境変数でしか決められないので、決まっていなければ決めて実行し直す
+#[cfg(target_os = "linux")]
+fn wait_passively_in_openmp() {
+    use std::os::unix::process::CommandExt;
+    const OMP_WAIT_POLICY: &str = "OMP_WAIT_POLICY";
+    if std::env::var_os(OMP_WAIT_POLICY).is_some() {
+        return;
+    }
+    let mut args = std::env::args_os();
+    let e = std::process::Command::new("/proc/self/exe")
+        .arg0(args.next().unwrap_or_default())
+        .args(args)
+        .env(OMP_WAIT_POLICY, "PASSIVE")
+        .exec();
+    log!("rinzed: {OMP_WAIT_POLICY} を決めて実行し直せない: {e}");
+}
+
 fn main() -> ExitCode {
+    #[cfg(target_os = "linux")]
+    wait_passively_in_openmp();
     let args = match parse_args(std::env::args().skip(1), |name| std::env::var_os(name)) {
         Ok(a) => a,
         Err(e) => {
