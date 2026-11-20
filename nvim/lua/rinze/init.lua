@@ -245,6 +245,8 @@ local function sync(session)
   local mode = session.surface.map_mode
   local buf = vim.api.nvim_get_current_buf()
   local active = session.enabled and session.surface.accepts_keys()
+  -- 割り当ての置き直しが途中で失敗しても blink.cmp の補完を止めたまま残さないよう、割り当てより先に知らせる
+  session.surface.follow_keys_taken(session, active and not session.passthrough)
   if session.held and (session.held.buf ~= buf or not active) then
     local find = keymap_lookup(mode)
     for index in pairs(session.held.keys) do
@@ -401,6 +403,8 @@ function insert.show_preedit(session, preedit)
 end
 
 function insert.redraw() end
+
+function insert.follow_keys_taken() end
 
 function insert.float_config(width, height)
   return {

@@ -132,6 +132,9 @@ check('モードを切り替えながら打った文', text, 'これはNeovimの
 text = type_in_new_buffer('<C-q>pa-n<C-q>Lab<C-j>a')
 check('半角カナと全角英字', text, 'ﾊﾟｰﾝａｂあ')
 
+text = type_in_new_buffer('sugoi!~q!~<C-q>!~<C-q>l!~<C-j>')
+check('! と ~ はひらがなとカタカナで全角、半角カナと ASCII で半角', text, 'すごい！〜！〜!~!~')
+
 type_in_new_buffer('l')
 text, snaps = type_in_new_buffer('abc' .. mode_snapshot .. '<C-j>')
 check('挿入モードを抜けて戻ってもモードを保つ', { text, snaps[1].status }, { 'abc', 'aA' })

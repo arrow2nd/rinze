@@ -960,7 +960,6 @@ fn ローマ字の表は_ddskk_の既定に揃える() {
         ("z*z0z@z{z}z(z)zLzn", "※○◎【】（）⇒ー"),
         ("z:z;", "゜゛"),
         ("z<Space>", "　"),
-        ("!~", "!~"),
         ("?:;[]", "？：；「」"),
     ] {
         let mut ed = Editor::new(Table::new(&[]));
@@ -970,10 +969,29 @@ fn ローマ字の表は_ddskk_の既定に揃える() {
 }
 
 #[test]
-fn 半角カナモードの_チルダは半角のまま() {
+fn 感嘆符とチルダはひらがなとカタカナのモードで全角になる() {
+    for (keys, want) in [
+        ("!~", "！〜"),
+        ("q!~", "！〜"),
+        ("A!~<CR>", "あ！〜"),
+        ("<C-q>!~", "!~"),
+        ("L!~", "！〜"),
+        ("l!~", "!~"),
+    ] {
+        let mut ed = Editor::new(Table::new(&[]));
+        ed.type_keys(keys);
+        assert_eq!(ed.buffer, want, "{keys}");
+    }
+}
+
+#[test]
+fn 半角カナモードでは記号に全角を残さない() {
     let mut ed = Editor::new(Table::new(&[]));
-    ed.type_keys("<C-q>a~z-");
-    assert_eq!(ed.buffer, "ｱ~〜");
+    ed.type_keys("<C-q>a!~z-");
+    assert_eq!(
+        ed.buffer, "ｱ!~~",
+        "Emacs の japanese-hankaku と同じく「〜」は ~ にするので、z- も ~ になる"
+    );
 }
 
 #[test]

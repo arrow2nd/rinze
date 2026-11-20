@@ -145,9 +145,9 @@ function M.redraw()
 end
 
 -- blink.cmp のコマンドラインの補完は、打鍵と CmdlineChanged に反応してメニューを出す。
--- 設定の cmdline.enabled はソースを集めるたびに読まれるので、rinze が有効な間だけ false にしてメニューを出させない
+-- 設定の cmdline.enabled はソースを集めるたびに読まれるので、rinze が打鍵を受け取る間だけ false にしてメニューを出させない
 local function suppress_blink(session)
-  if not package.loaded['blink.cmp'] then
+  if session.blink_cmdline or not package.loaded['blink.cmp'] then
     return
   end
   local ok, blink_config = pcall(require, 'blink.cmp.config')
@@ -167,6 +167,14 @@ local function release_blink(session)
   end
 end
 
+function M.follow_keys_taken(session, taken)
+  if taken then
+    suppress_blink(session)
+  else
+    release_blink(session)
+  end
+end
+
 function M.attach(session, hooks)
   local group = vim.api.nvim_create_augroup('rinze-cmdline', { clear = true })
   -- 有効にしたコマンドラインを抜けたら、入力途中のものを捨てる。次にコマンドラインに入ったときは無効から始まる
@@ -178,13 +186,11 @@ function M.attach(session, hooks)
     group = group,
     callback = hooks.moved,
   })
-  suppress_blink(session)
 end
 
 function M.detach(session)
   vim.api.nvim_del_augroup_by_name('rinze-cmdline')
   close_overlay(session)
-  release_blink(session)
   session.expect = nil
 end
 

@@ -37,6 +37,7 @@ require('blink.cmp').setup({
 local rinze = require('rinze')
 rinze.setup({ cmd = cmd, socket = socket, blink = true })
 vim.keymap.set('c', '<C-j>', rinze.enable)
+vim.keymap.set('c', '<C-l>', rinze.disable)
 vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'echoes' })
 _G.T = {}
 function T.menu()
@@ -67,8 +68,13 @@ local function menu_after(keys)
   end
   local menu = lua('return T.menu()')
   local preedit = lua('return require("rinze").preedit()')
+  local mode = lua('return require("rinze").mode()')
   input('<Esc>')
-  return menu, preedit
+  return menu, preedit, mode
+end
+
+local function blink_cmdline_enabled()
+  return lua('return require("blink.cmp.config").cmdline.enabled')
 end
 
 check('rinze を使わない検索では blink.cmp のコマンドラインのメニューが出る', menu_after({ '/ec' }), { 'echoes' })
@@ -76,7 +82,29 @@ local menu, preedit = menu_after({ '/ec', '<C-j>', 'K', 'a' })
 check('コマンドラインで rinze が有効な間は、打鍵に反応して blink.cmp のメニューを出さない', { preedit, menu }, { '▽か', false })
 check(': でも同じ', ({ menu_after({ ':ec', '<C-j>', 'K', 'a' }) })[1], false)
 check('コマンドラインを抜けると blink.cmp のメニューがまた出る', menu_after({ '/ec' }), { 'echoes' })
-check('blink.cmp の設定の cmdline.enabled は元に戻る', lua('return require("blink.cmp.config").cmdline.enabled'), true)
+check('blink.cmp の設定の cmdline.enabled は元に戻る', blink_cmdline_enabled(), true)
+
+local ascii_menu, _, ascii_mode = menu_after({ '/', '<C-j>', 'l', 'ec' })
+check('ASCII モードの間は blink.cmp のメニューが出る', { ascii_mode, ascii_menu }, { 'ascii', { 'echoes' } })
+local command_menu = menu_after({ ':', '<C-j>', 'l', 'ec' })
+check(
+  ': の ASCII モードでもコマンドの補完のメニューが出る',
+  type(command_menu) == 'table' and vim.tbl_contains(command_menu, 'echo'),
+  true
+)
+local back_menu, back_preedit, back_mode = menu_after({ '/', '<C-j>', 'l', 'ec', '<C-j>', 'K', 'a' })
+check(
+  'C-j でかなのモードに戻ると、blink.cmp のメニューがまた出なくなる',
+  { back_mode, back_preedit, back_menu },
+  { 'hiragana', '▽か', false }
+)
+check('かなのモードに戻ってから抜けても cmdline.enabled は元に戻る', blink_cmdline_enabled(), true)
+check(
+  'コマンドラインで rinze を無効にすると、抜ける前から blink.cmp のメニューが出る',
+  menu_after({ '/', '<C-j>', '<C-l>', 'ec' }),
+  { 'echoes' }
+)
+check('無効にしてから抜けても cmdline.enabled は元に戻る', blink_cmdline_enabled(), true)
 
 vim.fn.jobstop(child)
 if failures > 0 then

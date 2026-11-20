@@ -189,8 +189,10 @@ SKK と同じ。
 
 ### ローマ字
 
-ローマ字の規則は ddskk の `skk-rom-kana-base-rule-list` と `skk-rom-kana-rule-list` の既定値に合わせている。`!` と `~` は ddskk と同じく変換せずにそのまま入り、`z` で始まる記号 (`z ` の全角空白、`z*` の「※」、`zL` の「⇒」など) と `mm` の「んm」も ddskk と同じ。次の点だけ ddskk と違う。
+ローマ字の規則は ddskk の `skk-rom-kana-base-rule-list` と `skk-rom-kana-rule-list` の既定値に合わせている。`z` で始まる記号 (`z ` の全角空白、`z*` の「※」、`zL` の「⇒」など) と `mm` の「んm」も ddskk と同じ。次の点だけ ddskk と違う。
 
+- ひらがなモードとカタカナモードでは、`!` は「！」、`~` は「〜」(U+301C) になる。ddskk の既定ではどちらも変換せずにそのまま入るが、日本語の文章では全角で打つことが多いので全角にした。
+- 半角カナモードでは、`!` と `~` はそのまま入る。半角カナモードは半角の形がある記号を半角にして出し、「〜」は Emacs の `japanese-hankaku` と同じく `~` にするので、`z-` も `~` になる (ddskk の半角カナモードの `z-` は「〜」)。
 - `va` などは「う゛ぁ」ではなく「ゔぁ」、ひらがなモードの `xka` `xke` は「か」「け」ではなく「ゕ」「ゖ」を出す。カタカナモードではどちらも ddskk と同じになる。
 - `@` (`skk-today`)、`$` (`skk-display-code-for-char-at-point`)、`\` (`skk-input-by-code-or-menu`) は関数を呼ばず、そのまま入る。
 
@@ -381,7 +383,7 @@ tests/nvim/run.sh
 RINZED=result/bin/rinzed tests/nvim/run.sh
 
 # blink.cmp との連携を、default preset と enter preset (上書きあり、なし) で確かめる。
-# コマンドラインで rinze が有効な間に blink.cmp のコマンドラインのメニューが出ないことも確かめる。RINZE_BLINK も要る
+# コマンドラインで rinze がかなのモードの間は blink.cmp のコマンドラインのメニューが出ず、ASCII モードの間は出ることも確かめる。RINZE_BLINK も要る
 tests/nvim/blink.sh
 ```
 
@@ -482,7 +484,8 @@ vim.keymap.set('c', '<C-j>', function() require('rinze').enable() end)
 
 `preedit()`、`mode()`、`status()` は、コマンドラインで有効な間はコマンドラインの状態を返し、それ以外は挿入モードの状態を返す。
 
-blink.cmp のコマンドラインの補完は、打鍵に反応してカーソルより前のコマンドラインでメニューを出す。見出しの入力中にメニューが出ると候補の一覧と重なるので、rinze はコマンドラインで有効な間だけ blink.cmp の設定の `cmdline.enabled` を false にし、抜けると戻す。blink.cmp の設定に何も足さなくてよい。
+blink.cmp のコマンドラインの補完は、打鍵に反応してカーソルより前のコマンドラインでメニューを出す。見出しの入力中にメニューが出ると候補の一覧と重なるので、rinze はコマンドラインで打鍵を受け取る間 (かなのモードと全角英字モード) だけ blink.cmp の設定の `cmdline.enabled` を false にし、ASCII モードに入るか、rinze を無効にするか、コマンドラインを抜けると元の値に戻す。ASCII モードの間は rinze が無効なときと同じく `:` のコマンドなどの補完が出る。blink.cmp の設定に何も足さなくてよい。
+全角英字モードでは未確定文字列は無いが、コマンド名やバッファの英単語の候補は全角の文字に一致しないので、補完を止めたままにする。
 blink.cmp の内部の設定 (`require('blink.cmp.config').cmdline`) を書き換えるので、blink.cmp 1.10.2 で確かめ、`tests/nvim/blink.sh` が守る。
 
 ### blink.cmp との連携

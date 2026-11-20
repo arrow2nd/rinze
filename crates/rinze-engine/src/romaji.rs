@@ -65,7 +65,7 @@ const RULES: &[Rule] = &[
     emit_keep("ss", "っ", "s"), emit_keep("tt", "っ", "t"), emit_keep("vv", "っ", "v"), emit_keep("ww", "っ", "w"), emit_keep("xx", "っ", "x"),
     emit_keep("yy", "っ", "y"), emit_keep("zz", "っ", "z"),
     emit("-", "ー"), emit(",", "、"), emit(".", "。"), emit("?", "？"), emit(":", "："), emit(";", "；"),
-    emit("[", "「"), emit("]", "」"),
+    emit("[", "「"), emit("]", "」"), emit("!", "！"), emit("~", "〜"),
     emit("z ", "　"), emit("z*", "※"), emit("z,", "‥"), emit("z-", "〜"), emit("z.", "…"), emit("z/", "・"),
     emit("z0", "○"), emit("z:", "゜"), emit("z;", "゛"), emit("z@", "◎"), emit("z[", "『"), emit("z]", "』"),
     emit("z{", "【"), emit("z}", "】"), emit("z(", "（"), emit("z)", "）"),
