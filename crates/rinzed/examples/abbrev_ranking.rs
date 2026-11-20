@@ -54,7 +54,7 @@ fn main() {
     let (mut dict_top, mut zenz_top) = (0, 0);
     println!("左文脈\t見出し\t期待\t辞書の順位\tzenz の順位\tzenz の順");
     for &(left, key, expected) in CASES {
-        let words = dict.lookup(key).to_vec();
+        let words: Vec<String> = dict.lookup(key).map(String::from).collect();
         let scores = zenz.score(left, key, &words).unwrap();
         let mut order: Vec<usize> = (0..words.len()).collect();
         order.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));

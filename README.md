@@ -11,8 +11,8 @@ SKK 方式の IME。打ち方は SKK と同じで、変換候補の順位を「�
 
 | crate | 役割 |
 | --- | --- |
-| `rinze-engine` | 入力の状態機械。入力モード、ローマ字の解釈、▽ / ▼ の状態、abbrev、候補の送り、辞書登録 (入れ子を含む)、辞書から消すかの問いを持つ。入出力を持たず、候補の取得、登録した語の保存と削除、確定した候補の通知は `Converter` trait に任せる |
-| `rinze-dict` | SKK 辞書の読み込みと見出しの検索、SKK 辞書のテキストへの語の追加と削除 |
+| `rinze-engine` | 入力の状態機械。入力モード、ローマ字の解釈、▽ / ▼ の状態、abbrev、候補の送り、見出しの入力中の候補の選択、辞書登録 (入れ子を含む)、辞書から消すかの問いを持つ。入出力を持たず、候補の取得、登録した語の保存と削除、確定した候補の通知は `Converter` trait に任せる |
+| `rinze-dict` | SKK 辞書の読み込みと見出しの検索、SKK 辞書のテキストへの語の追加と削除 (`skk-ignore-dic-word` での除外を含む) |
 | `rinze-zenz` | zenz による候補の点数づけと、ビーム探索による表記の生成 |
 | `rinzed` | 常駐プロセス。辞書、ユーザー辞書、学習の履歴、zenz を 1 つずつ持ち、Unix ドメインソケットで msgpack-rpc を受ける。上の 3 つを繋ぐ唯一の場所で、ユーザー辞書と学習の履歴を書くのも rinzed だけ |
 
@@ -20,13 +20,15 @@ SKK 方式の IME。打ち方は SKK と同じで、変換候補の順位を「�
 
 ### 通信
 
-msgpack-rpc の要求を 3 種類受け付ける。
+msgpack-rpc の要求を 5 種類受け付ける。
 
 - `key(key, left_context)`: `key` は 1 文字か `space` `enter` `backspace` `ctrl-g` `ctrl-j` `ctrl-q`。`left_context` はカーソルより前の文字列で、zenz にはその末尾 40 字を渡す。
 - `flush()`: 入力途中のものを表示どおりに確定し、状態を空にする。入力モードは変えない。
 - `reset()`: `flush` したうえで、入力モードをひらがなに戻す。フロントエンドが入力を有効にしたときに使う。
+- `choose(version, word, left_context)`: 見出しの入力中 (▽) に、その読みの候補 `word` で見出しを確定する。Space で変換して `word` まで送って確定したのと同じに扱い、最初の候補だったかを[学習](#学習)に知らせる。`version` が最後の応答の `version` と違えば (そのあとにキーを処理していれば) 何もせず、`handled` を false で返す。`word` が見出しの候補に無いときも同じ。
+- `lookup(reading, left_context)`: 送りがなの無い読み `reading` の候補を、Space で変換したときと同じ順の文字列の配列で返す。入力状態に触れないので、キーを送る接続と別の接続で、キーの処理を待たせずに問い合わせられる。生成した表記は含めない。
 
-どれも次の map を返す。
+`lookup` 以外は次の map を返す。
 
 | キー | 内容 |
 | --- | --- |
@@ -37,8 +39,11 @@ msgpack-rpc の要求を 3 種類受け付ける。
 | `minibuffer` | 辞書登録の入力欄か、辞書から消すかの問いがあるときだけ、いちばん内側のもの `{prompt, text, preedit}`、それ以外は nil。`prompt` (`[辞書登録] まよねーず: `、入れ子では `[[辞書登録]] まよ: `、消すときは `あした /朝/ を辞書から削除します。良いですか？ (yes or no) `)、`text` (確定した文字列)、`preedit` (未確定文字列) をこの順に並べて表示する |
 | `mode` | 次のキーを受ける階層の入力モード。`hiragana` `katakana` `halfwidth-katakana` `ascii` `fullwidth-latin` のどれか。辞書登録中はいちばん内側の入力欄のモード |
 | `passthrough` | true の間は `ctrl-j` 以外のキーをすべて処理せずに返す (`handled` は false、`commit` は空) ので、フロントエンドは `ctrl-j` 以外のキーを送らずにそのまま処理してよい。外側が ASCII モードのときだけ true で、辞書登録の入力欄が ASCII モードのときは入力欄に文字を入れるので false |
+| `reading` | 見出しの入力中 (▽) だけ、Space で変換する読み (`▽あしt` なら `あし`)。送りがなの入力中、abbrev、辞書登録の入力欄では nil |
+| `version` | 接続ごとに、要求を処理するたびに増える数。`choose` に渡す |
 
 辞書登録中も `preedit` は元の位置の未確定文字列 (`▼まよねーず`) で、入れ子の状態はすべて rinzed が持つ。
+rinzed は最後に zenz でつけた点数を 1 組覚えていて、左文脈と読みと候補が同じ問いには点数をつけ直さない。`lookup` で並べた読みをそのまま Space で変換すると、並べ替えを待たない (下の [blink.cmp との連携](#blinkcmp-との連携))。
 
 ## 打ち方
 
@@ -50,7 +55,12 @@ SKK と同じ。
 - 候補の表示中に次の文字を打つか Enter で確定する。`C-g` で取り消す。
 - 辞書の候補を送り切ると、zenz が生成した表記を続けて出す。辞書に見出しの無い読みでは生成した表記が最初の候補になる (`Mayone-zu` の Space で「マヨネーズ」)。
 - 生成した表記も送り切ると辞書登録に入り、`[辞書登録] まよねーず: ` の入力欄で登録する語を打つ。入力欄でも変換でき、そこで辞書登録に入れば入れ子になる。Enter で登録して元の位置に確定し、空のまま Enter するか `C-g` で登録をやめて元の状態に戻る。送りありの語は送りがなを除いて打つ (打っても除く)。
-- 候補の表示中に `X` を打つと、ddskk と同じく表示中の候補を辞書から消すかを問う。`yes` と打って Enter で消し、表示中の候補を確定せずに消す。`no` か `C-g` で候補の表示に戻る。消すのはユーザー辞書からだけなので、システム辞書にもある語は次の変換でも出る。その候補の[学習](#学習)の履歴も消す。候補の表示中でなければ `X` はそのまま入る。
+- 候補の表示中に `X` を打つと、ddskk と同じく表示中の候補を辞書から消すかを問う。`yes` と打って Enter で消し、表示中の候補を確定せずに消す。`no` か `C-g` で候補の表示に戻る。候補の表示中でなければ `X` はそのまま入る。
+  - ユーザー辞書だけにある語は、ユーザー辞書の行から除く。
+  - システム辞書にある語は、ddskk と同じくユーザー辞書のその見出しの行の先頭に `(skk-ignore-dic-word "明日")` を書き、以後その見出しの候補に出さない。同じ行で消した語は 1 つの `(skk-ignore-dic-word "明日" "朝")` にまとめる。注釈のある語は注釈も含めて ddskk と同じ書き方 (`"晨\073あさ"`) で書く。zenz の生成した表記にも出さない。
+  - どちらの辞書にも無い語 (生成した表記) も同じく `skk-ignore-dic-word` に書き、以後その読みで生成しても出さない。
+  - 消した語をもう一度辞書登録すると、行の先頭に語を書き、`skk-ignore-dic-word` からも外す。ddskk は `skk-ignore-dic-word` を残したまま語を先頭に足し、その時点では同じく候補に出すが、同じ行で別の語を消すと `skk-ignore-dic-word` を先頭に移すので登録し直した語がまた出なくなる。rinze は外すので、どちらで読んでも登録し直した語が出る。
+  - その候補の[学習](#学習)の履歴も消す。
 - `Q` で空の見出し (▽) に入る。見出しの途中なら、それまでの見出しをかなで確定してから新しい見出しに入る。空の見出しで Space を打つと見出しをやめる。
 - Enter は確定だけを行い、改行しない。ddskk の既定 (`skk-egg-like-newline` が nil) では確定と同時に改行するが、rinze は `skk-egg-like-newline` を t にしたときと同じに動く。
 
@@ -107,6 +117,7 @@ zenz に幅 8 のビーム探索で表記を生成させ、次のものを捨て
 
 登録した語は SKK 辞書と同じ書式の UTF-8 のテキストに書く。既定の場所は Linux で `$XDG_DATA_HOME/rinze/user.jisyo` (無ければ `~/.local/share/rinze/user.jisyo`)、macOS で `~/Library/Application Support/rinze/user.jisyo` で、`rinzed --user-dict` で変えられる。
 書くのは rinzed だけで、一時ファイルに書いて fsync してから rename するので、途中で落ちても壊れない。ユーザー辞書の語はシステム辞書の候補と合わせて zenz で並べ替え、先頭には固定しない。
+ユーザー辞書の行の `(skk-ignore-dic-word "語" ...)` に書いた語は、その見出しのシステム辞書の候補と生成した表記から除く。ddskk の書いたユーザー辞書の行も同じに読み、同じ行に `skk-ignore-dic-word` と並べて書かれた語はユーザー辞書の語として出す。
 
 ### 学習
 
@@ -118,7 +129,7 @@ zenz に幅 8 のビーム探索で表記を生成させ、次のものを捨て
 - 生成した表記を選んでも覚えない。辞書の候補ではないので、次の変換の候補に無く、加点する先が無い。
 - abbrev の候補は zenz で並べ替えないので、最後に選び直した候補を先頭に出し、ほかは辞書の順のまま出す。
 - 候補の表示中に `X` で辞書から消すと、その候補の履歴も消す。
-- 確定の経路 (次の文字、Enter、`C-j`、モードの切り替え、一覧からの選択、後退、`flush`、`reset`、辞書登録) はどれも、エンジンの `Converter::committed` を 1 回呼ぶ。最初に出た候補だったかを `Pick` で渡し、覚えるかは rinzed が決める。経路ごとの通知は `cargo test -p rinze-engine` が確かめ、コーパスの全区間で区間ごとに 1 回ずつ通知することも確かめる。
+- 確定の経路 (次の文字、Enter、`C-j`、モードの切り替え、一覧からの選択、後退、`flush`、`reset`、辞書登録、見出しの入力中の `choose`) はどれも、エンジンの `Converter::committed` を 1 回呼ぶ。最初に出た候補だったかを `Pick` で渡し、覚えるかは rinzed が決める。経路ごとの通知は `cargo test -p rinze-engine` が確かめ、コーパスの全区間で区間ごとに 1 回ずつ通知することも確かめる。
 
 履歴は UTF-8 のテキストで、1 行に `見出し<TAB>候補<TAB>最後に選び直した時刻 (UNIX 時刻のミリ秒)` を書く。
 既定の場所は Linux で `$XDG_STATE_HOME/rinze/history.tsv` (無ければ `~/.local/state/rinze/history.tsv`)、macOS で `~/Library/Application Support/rinze/history.tsv` で、`rinzed --history` で変えられる。
@@ -175,7 +186,7 @@ tests/nvim/commit_timing.sh      # ROUNDS で回数を、HISTORY_LINES で行の
 
 ## 開発環境
 
-NixOS / nix で `nix develop` に入ると、cargo、llama.cpp のビルドに要る cmake と libclang、Neovim が揃う。
+NixOS / nix で `nix develop` に入ると、cargo、llama.cpp のビルドに要る cmake と libclang、Neovim が揃い、blink.cmp のパスが `RINZE_BLINK` に入る。
 
 ```sh
 nix develop
@@ -216,9 +227,12 @@ cargo test --release -p rinzed
 cargo build --release -p rinzed
 tests/nvim/run.sh
 RINZED=result/bin/rinzed tests/nvim/run.sh
+
+# blink.cmp との連携を、default preset と enter preset (上書きあり、なし) で確かめる。RINZE_BLINK も要る
+tests/nvim/blink.sh
 ```
 
-`RINZE_MODEL` と `RINZE_DICT` が無ければ、モデルが要るテストは何もせずに通る。
+`RINZE_MODEL` と `RINZE_DICT` (blink.sh では `RINZE_BLINK` も) が無ければ、モデルが要るテストは何もせずに通る。
 
 ### 日常の文章での 1 位正解率
 
@@ -279,3 +293,43 @@ Unix ドメインソケットのパスには上限 (Linux で 107 バイト、ma
 
 Neovim を同時にいくつ開いても rinzed は 1 つだけ動く。rinzed はソケットごとのロックファイル (`rinze.sock.lock`) を生きている間ずっとロックし、ロックを取れなかったものは何もせずに 0 で終了する。プラグインは起動したものが 0 で終了した場合も、先に動いている rinzed が待ち受けを始めるまで待つ。
 ロックは rinzed が落ちれば外れるので、ロックを取れた rinzed は残っているソケットを前の rinzed の残骸として消してから bind する。
+
+### blink.cmp との連携
+
+[blink.cmp](https://github.com/saghen/blink.cmp) を使っているなら、`setup` に `blink = true` を渡すと、見出しの入力中 (▽) にその読みの変換候補を blink.cmp のメニューに出す。blink.cmp が無いか、`blink` を渡さなければ何も変わらない。
+
+```lua
+require('rinze').setup({
+  cmd = { 'rinzed', '--model', '/path/to/ggml-model-Q5_K_M.gguf', '--dict', '/path/to/SKK-JISYO.L' },
+  blink = true,
+})
+```
+
+- メニューの並びは Space で変換したときと同じ (zenz の点数と学習の加点) で、`Asita` と打てば `Asita` の Space で送る順に「明日」「朝」「晨」が出る。出すのは送りがなの無い見出しの辞書の候補だけで、送りがなの入力中、abbrev、辞書登録の入力欄では出さない。生成した表記も出さない。
+- メニューで受け入れる (`default` preset なら `C-y`) と、その候補で見出しを確定する。Space で送って確定したのと同じに扱い、先頭以外の候補なら[学習](#学習)の履歴に書く。
+- `C-n` などで選ぶと、blink.cmp は候補をバッファに仮に入れる (`completion.list.selection.auto_insert`)。その状態で rinze のキーを打つと、SKK で候補の表示中に次の文字を打ったときと同じく、仮に入れた候補を確定してからそのキーを処理する。Enter はその確定だけを行い、改行しない。
+- メニューに候補が見えていても、選ぶまで何も確定しない。Space での変換、5 候補目からの一覧、Enter での読みのままの確定はそのまま使える。メニューで並べた読みをそのまま Space で変換すると、並べ替えをやり直さない (`かんじ` の Space の中央値が、メニューを出さないときの 35 ms から 0.14〜0.16 ms になった。`tests/nvim/blink.sh` で 5 回ずつ)。
+- 候補はキーを送る接続とは別の接続で `lookup` で問い合わせ、キーの処理は問い合わせを待たない。問い合わせの途中に来た問い合わせは最新の 1 件だけ残す。`tests/nvim/blink.sh` では、Space を除く 1 打鍵の処理の中央値が連携ありで 0.08〜0.10 ms、なしで 0.02〜0.03 ms (それぞれ 90 打鍵、`cargo build --release` と `nix build` のバイナリで 1 回ずつ) で、`Nihongonyuuryoku` を一気に打ち終えてから最後の読みのメニューが出るまでは 27 ms だった。
+- ソースは `rinze` という名前で rinze が blink.cmp に足すので、blink.cmp の設定の `sources` に書かなくてよい。メニューにはこのソースだけを出し、ほかのソース (buffer、LSP など) の候補は混ぜない。確定した文字列は打鍵としてバッファに入るので、そのあとは普段どおりほかのソースの補完が働く。
+
+`default` preset のキーは rinze のキーと重ならない。`enter` preset では、メニューの表示中の Enter が先頭の候補の受け入れになり、SKK の「▽ で Enter は読みのまま確定」と意味が変わる。読みのまま確定したい場合は、見出しの入力中だけ Enter を rinze に渡すよう上書きする。
+
+```lua
+require('blink.cmp').setup({
+  keymap = {
+    preset = 'enter',
+    ['<CR>'] = {
+      function(cmp)
+        if require('rinze').preedit() == '' then
+          return cmp.accept()
+        end
+      end,
+      'fallback',
+    },
+  },
+})
+```
+
+ほかに rinze が受け取るキー (印字可能文字、Space、BackSpace、`C-g`、`C-j`、`C-q`、Esc) を blink.cmp の `keymap` に割り当てる場合も、同じく見出しの入力中は `fallback` に回す。rinze のキーの割り当ては `<Cmd>` を右辺にしているので、blink.cmp の `fallback` から呼ばれても、続けて打ったキーと順序が入れ替わらない。
+
+blink.cmp は受け入れ (`C-y`) と選択 (`C-n`) を `vim.schedule` で後回しにするので、rinze はキーを処理する前に `vim.wait(0)` で後回しの処理を先に済ませ、受け入れの直後に間を空けずに打ったキーを受け入れのあとに処理する。仮に入れた候補を確かめて取り消すのに blink.cmp の内部の `blink.cmp.completion.list` (`preview_undo`、`get_selected_item`、`undo_preview`) を使っている。blink.cmp 1.10.2 で確かめ、`tests/nvim/blink.sh` が守る。

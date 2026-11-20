@@ -25,6 +25,8 @@
             pkgs.clippy
             pkgs.neovim
           ];
+          # tests/nvim/blink.sh が blink.cmp との連携を確かめるのに使う
+          RINZE_BLINK = "${pkgs.vimPlugins.blink-cmp}";
         } // simdEnv pkgs);
       });
 

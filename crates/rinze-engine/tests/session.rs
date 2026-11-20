@@ -175,6 +175,19 @@ impl<C: Converter> Editor<C> {
         self.session.reset(&mut self.table)
     }
 
+    fn choose(&mut self, version: u64, word: &str) -> &Response {
+        let res = self
+            .session
+            .choose(version, word, &self.buffer, &mut self.table);
+        self.buffer.push_str(&res.commit);
+        self.last = res;
+        &self.last
+    }
+
+    fn reading(&self) -> Option<&str> {
+        self.last.reading.as_deref()
+    }
+
     fn preedit(&self) -> &str {
         &self.last.preedit
     }
@@ -1425,4 +1438,90 @@ fn 候補を確定するどの経路でも確定を_1_回知らせる() {
         }
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+#[test]
+fn 見出しの入力中は_space_で変換する読みを返す() {
+    let mut ed = Editor::new(Table::new(&[]));
+    let cases: &[(&str, Option<&str>)] = &[
+        ("Asi", Some("あし")),
+        ("t", Some("あし")),
+        ("a", Some("あした")),
+        ("<C-g>Kan", Some("かん")),
+        ("<C-g>AT", None),
+        ("<C-g>/file", None),
+        ("<C-g>Q", None),
+        ("<C-g>a", None),
+    ];
+    for (keys, reading) in cases {
+        ed.type_keys(keys);
+        assert_eq!(ed.reading(), *reading, "{keys} のあと {}", ed.preedit());
+    }
+    let mut ed = Editor::new(Table::new(&[("あした", &["明日"])]));
+    ed.type_keys("Asita<Space>");
+    assert_eq!(ed.reading(), None, "候補の表示中は返さない");
+    ed.type_keys("<CR>Rinze<Space>Asi");
+    assert_eq!(ed.reading(), None, "辞書登録の入力欄の見出しは返さない");
+}
+
+#[test]
+fn 版はキーを処理するたびに増える() {
+    let mut ed = Editor::new(Table::new(&[]));
+    ed.type_keys("A");
+    let first = ed.last.version;
+    ed.type_keys("s");
+    assert!(ed.last.version > first);
+    let before_flush = ed.last.version;
+    assert!(ed.flush().version > before_flush);
+}
+
+#[test]
+fn 見出しの入力中に選んだ候補は_space_で変換して確定したのと同じに確定し知らせる() {
+    let entries: &[(&str, &[&str])] = &[("あした", &["明日", "朝"])];
+    let mut ed = Editor::new(Table::new(entries));
+    ed.type_keys("きょうはAsita");
+    let res = ed.choose(ed.last.version, "朝").clone();
+    assert!(res.handled);
+    assert_eq!((ed.buffer.as_str(), ed.preedit()), ("きょうは朝", ""));
+    assert_eq!(
+        ed.table.queries.last(),
+        Some(&recorded("きょうは", "あした", None)),
+        "Space と同じ左文脈で候補を引く"
+    );
+    ed.type_keys("Asita");
+    ed.choose(ed.last.version, "明日");
+    assert_eq!(ed.buffer, "きょうは朝明日");
+    assert_eq!(
+        ed.table.committed,
+        [
+            ("あした".to_string(), "朝".to_string(), Pick::Other),
+            ("あした".to_string(), "明日".to_string(), Pick::First),
+        ],
+        "最初の候補かどうかを Space で送ったときと揃える"
+    );
+    ed.type_keys("a");
+    assert_eq!(ed.buffer, "きょうは朝明日あ", "確定のあとはかなを打てる");
+}
+
+#[test]
+fn 古い版への選択と候補に無い語の選択は何もしない() {
+    let mut ed = Editor::new(Table::new(&[("あした", &["明日", "朝"])]));
+    ed.type_keys("Asita");
+    let shown = ed.last.version;
+    ed.type_keys("n");
+    let res = ed.choose(shown, "明日").clone();
+    assert!(!res.handled);
+    assert_eq!(
+        (ed.buffer.as_str(), ed.preedit()),
+        ("", "▽あしたn"),
+        "あとから打った文字を残す"
+    );
+    let res = ed.choose(ed.last.version, "晨").clone();
+    assert!(!res.handled);
+    assert_eq!(ed.preedit(), "▽あしたn");
+    ed.type_keys("<BS><Space>");
+    assert_eq!(ed.preedit(), "▼明日");
+    ed.choose(ed.last.version, "明日");
+    assert_eq!(ed.preedit(), "▼明日", "候補の表示中は選べない");
+    assert!(ed.table.committed.is_empty());
 }

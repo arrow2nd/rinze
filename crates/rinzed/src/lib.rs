@@ -5,11 +5,16 @@
 //!   `key` は 1 文字か `space` `enter` `backspace` `ctrl-g` `ctrl-j` `ctrl-q`。
 //! - `flush() -> response` 入力途中のものを表示どおりに確定する。モードは変えない。
 //! - `reset() -> response` `flush` したうえで、モードをひらがなに戻す。
+//! - `choose(version: int, word: string, left_context: string) -> response` 見出しの入力中に、その読みの候補 `word` で確定する。
+//!   `version` が最後の応答の版と違うか、`word` が候補に無ければ何もせず `handled` を false で返す。
+//! - `lookup(reading: string, left_context: string) -> [string]` 送りがなの無い読みの候補を Space で変換したときと同じ順で返す。
+//!   接続の入力状態に触れない。
 //!
-//! `response` は `{handled, commit, preedit, candidates, minibuffer, mode, passthrough}` の map。
+//! `response` は `{handled, commit, preedit, candidates, minibuffer, mode, passthrough, reading, version}` の map。
 //! `candidates` は一覧の表示中だけ `{items: [[label, word], ...], page, pages}`、
 //! `minibuffer` は辞書登録の入力欄か辞書から消すかの問いがあるときだけ `{prompt, text, preedit}` で、それ以外は nil。
 //! `mode` は `hiragana` `katakana` `halfwidth-katakana` `ascii` `fullwidth-latin` のどれか。
+//! `reading` は見出しの入力中 (▽) だけ Space で変換する読みで、それ以外は nil。`version` は要求を処理するたびに増える。
 
 mod file;
 pub mod history;
@@ -51,8 +56,20 @@ const MSGPACK_RPC_RESPONSE: u64 = 1;
 pub struct Backend<'m> {
     pub dict: Dictionary,
     pub user: Mutex<UserDictionary>,
-    pub zenz: Mutex<Zenz<'m>>,
     pub learning: Learning,
+    scorer: Mutex<Scorer<'m>>,
+}
+
+struct Scorer<'m> {
+    zenz: Zenz<'m>,
+    last: Option<Scored>,
+}
+
+struct Scored {
+    left_context: String,
+    reading: String,
+    surfaces: Vec<String>,
+    scores: Vec<f64>,
 }
 
 pub enum Learning {
@@ -60,13 +77,14 @@ pub enum Learning {
     On(Mutex<History>),
 }
 
-/// ユーザー辞書の候補にシステム辞書の候補を続け、重複を 1 つにまとめる。
+/// ユーザー辞書の候補にシステム辞書の候補を続け、重複を 1 つにまとめる。ユーザー辞書で外した語はシステム辞書から取らない。
 pub fn lookup(dict: &Dictionary, user: &UserDictionary, midashi: &Midashi) -> Vec<String> {
     let key = midashi.key();
-    let mut words = user.lookup(&key).to_vec();
+    let ignored = user.ignored(&key);
+    let mut words: Vec<String> = user.lookup(&key).map(String::from).collect();
     for word in dict.lookup(&key) {
-        if !words.contains(word) {
-            words.push(word.clone());
+        if !words.iter().any(|w| w == word) && !ignored.iter().any(|i| i == word) {
+            words.push(word.to_string());
         }
     }
     words
@@ -115,13 +133,13 @@ impl<'m> Backend<'m> {
         Self {
             dict,
             user: Mutex::new(user),
-            zenz: Mutex::new(zenz),
             learning,
+            scorer: Mutex::new(Scorer { zenz, last: None }),
         }
     }
 
-    fn zenz(&self) -> std::sync::MutexGuard<'_, Zenz<'m>> {
-        self.zenz.lock().unwrap_or_else(|e| e.into_inner())
+    fn scorer(&self) -> std::sync::MutexGuard<'_, Scorer<'m>> {
+        self.scorer.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn user(&self) -> std::sync::MutexGuard<'_, UserDictionary> {
@@ -168,6 +186,7 @@ impl<'m> Backend<'m> {
     }
 
     /// 送りがなを含めた表記の、左文脈に対する対数尤度を `words` と同じ順で返す。
+    /// 点数は左文脈と読みと表記だけで決まるので、直前と同じ問いには直前の点数を返す。
     pub fn score(
         &self,
         left_context: &str,
@@ -179,8 +198,21 @@ impl<'m> Backend<'m> {
         };
         let okuri = okuri.as_ref().map_or("", |o| o.kana.as_str());
         let surfaces: Vec<String> = words.iter().map(|w| format!("{w}{okuri}")).collect();
-        self.zenz()
-            .score(left_context, &format!("{reading}{okuri}"), &surfaces)
+        let reading = format!("{reading}{okuri}");
+        let mut scorer = self.scorer();
+        if let Some(scored) = scorer.last.as_ref().filter(|s| {
+            s.left_context == left_context && s.reading == reading && s.surfaces == surfaces
+        }) {
+            return Ok(scored.scores.clone());
+        }
+        let scores = scorer.zenz.score(left_context, &reading, &surfaces)?;
+        scorer.last = Some(Scored {
+            left_context: left_context.to_string(),
+            reading,
+            surfaces,
+            scores: scores.clone(),
+        });
+        Ok(scores)
     }
 
     /// zenz が生成した表記のうち、読みと送りがなに対応するものを良い順に返す。読みと同じひらがなの表記は除く。
@@ -196,19 +228,23 @@ impl<'m> Backend<'m> {
         let okuri = okuri.as_ref().map_or("", |o| o.kana.as_str());
         let reading = format!("{stem_reading}{okuri}");
         let started = Instant::now();
-        let generated = match self
-            .zenz()
-            .generate(query.left_context, &reading, GENERATE_WIDTH)
-        {
-            Ok(g) => g,
-            Err(e) => {
-                log!("rinzed: {reading} の生成に失敗した: {e}");
-                return Vec::new();
-            }
-        };
+        let generated =
+            match self
+                .scorer()
+                .zenz
+                .generate(query.left_context, &reading, GENERATE_WIDTH)
+            {
+                Ok(g) => g,
+                Err(e) => {
+                    log!("rinzed: {reading} の生成に失敗した: {e}");
+                    return Vec::new();
+                }
+            };
         let Some(best) = generated.first().map(|g| g.score) else {
             return Vec::new();
         };
+        let user = self.user();
+        let ignored = user.ignored(&query.midashi.key());
         let mut words: Vec<String> = Vec::new();
         for g in generated
             .iter()
@@ -221,6 +257,7 @@ impl<'m> Backend<'m> {
                 || stem == stem_reading
                 || !reads_as(stem, stem_reading)
                 || words.iter().any(|w| w == stem)
+                || ignored.iter().any(|i| i == stem)
             {
                 continue;
             }
@@ -245,9 +282,9 @@ impl<'m> Backend<'m> {
 
     pub fn purge(&self, midashi: &Midashi, word: &str) {
         let key = midashi.key();
-        match self.user().purge(midashi, word) {
-            Ok(true) => log!("rinzed: {key} /{word}/ をユーザー辞書から消した"),
-            Ok(false) => log!("rinzed: {key} /{word}/ はユーザー辞書に無い"),
+        match self.user().purge(midashi, word, &self.dict) {
+            Ok(true) => log!("rinzed: {key} /{word}/ を辞書から消した"),
+            Ok(false) => log!("rinzed: {key} /{word}/ は消してある"),
             Err(e) => log!("rinzed: {key} /{word}/ を消せなかった: {e}"),
         }
         if let Some(mut history) = self.history() {
@@ -335,7 +372,7 @@ pub fn serve(stream: UnixStream, backend: &Backend<'_>) -> std::io::Result<()> {
         }
         let result = dispatch(&mut session, backend, method.as_str().unwrap_or(""), params);
         let (error, result) = match result {
-            Ok(r) => (Value::Nil, encode_response(&r)),
+            Ok(r) => (Value::Nil, r),
             Err(e) => (Value::from(e), Value::Nil),
         };
         let reply = Value::Array(vec![
@@ -354,21 +391,45 @@ fn dispatch(
     backend: &Backend<'_>,
     method: &str,
     params: &Value,
-) -> Result<Response, String> {
+) -> Result<Value, String> {
     let params = params.as_array().map(Vec::as_slice).unwrap_or(&[]);
-    match method {
+    let converter = &mut SharedConverter(backend);
+    let response = match method {
         "key" => {
             let [key, left] = params else {
                 return Err("key は (key, left_context) を受け取る".into());
             };
             let key = parse_key(key.as_str().unwrap_or(""))?;
-            let left = left.as_str().unwrap_or("");
-            Ok(session.handle(key, left, &mut SharedConverter(backend)))
+            session.handle(key, left.as_str().unwrap_or(""), converter)
         }
-        "flush" => Ok(session.flush(&mut SharedConverter(backend))),
-        "reset" => Ok(session.reset(&mut SharedConverter(backend))),
-        _ => Err(format!("未知のメソッド: {method}")),
-    }
+        "flush" => session.flush(converter),
+        "reset" => session.reset(converter),
+        "choose" => {
+            let [version, word, left] = params else {
+                return Err("choose は (version, word, left_context) を受け取る".into());
+            };
+            let version = version.as_u64().ok_or("version が数でない")?;
+            let word = word.as_str().unwrap_or("");
+            session.choose(version, word, left.as_str().unwrap_or(""), converter)
+        }
+        "lookup" => {
+            let [reading, left] = params else {
+                return Err("lookup は (reading, left_context) を受け取る".into());
+            };
+            let midashi = Midashi::Kana {
+                reading: reading.as_str().unwrap_or("").to_string(),
+                okuri: None,
+            };
+            let query = Query {
+                left_context: left.as_str().unwrap_or(""),
+                midashi: &midashi,
+            };
+            let words = backend.candidates(&query);
+            return Ok(Value::Array(words.into_iter().map(Value::from).collect()));
+        }
+        _ => return Err(format!("未知のメソッド: {method}")),
+    };
+    Ok(encode_response(&response))
 }
 
 fn parse_key(name: &str) -> Result<Key, String> {
@@ -423,6 +484,11 @@ fn encode_response(r: &Response) -> Value {
         ("minibuffer".into(), minibuffer),
         ("mode".into(), mode_name(r.mode).into()),
         ("passthrough".into(), r.passthrough.into()),
+        (
+            "reading".into(),
+            r.reading.as_deref().map_or(Value::Nil, Value::from),
+        ),
+        ("version".into(), r.version.into()),
     ])
 }
 
@@ -475,12 +541,44 @@ mod tests {
         user.register(&at, "会").unwrap();
         user.register(&at, "遭").unwrap();
         assert_eq!(lookup(&dict, &user, &at), ["遭", "会", "合"]);
-        user.purge(&at, "遭").unwrap();
+        user.purge(&at, "遭", &dict).unwrap();
         assert_eq!(
             lookup(&dict, &user, &at),
             ["会", "合"],
             "ユーザー辞書から消した語は出ない"
         );
+    }
+
+    #[test]
+    fn システム辞書の語を消すと次の変換にも開き直したあとにも出ず_登録し直せば出る() {
+        let dir = std::env::temp_dir().join(format!("rinzed-purge-shared-{}", std::process::id()));
+        let path = dir.join("user.jisyo");
+        let dict = Dictionary::parse("あした /明日/朝/晨;あさ/\n");
+        let asita = kana("あした", None);
+        let mut user = UserDictionary::open(path.clone()).unwrap();
+        user.purge(&asita, "明日", &dict).unwrap();
+        user.purge(&asita, "晨", &dict).unwrap();
+        assert_eq!(lookup(&dict, &user, &asita), ["朝"]);
+        let reopened = UserDictionary::open(path.clone()).unwrap();
+        assert_eq!(lookup(&dict, &reopened, &asita), ["朝"]);
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("あした /(skk-ignore-dic-word \"明日\" \"晨\\073あさ\")/\n"),
+            "ddskk と同じ書式で外した語を書く"
+        );
+        user.register(&asita, "明日").unwrap();
+        assert_eq!(lookup(&dict, &user, &asita), ["明日", "朝"]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn 辞書に無い語を消すとその読みの候補から外す() {
+        let dict = Dictionary::parse("");
+        let mut user = UserDictionary::in_memory();
+        let mayo = kana("まよねーず", None);
+        user.purge(&mayo, "マヨネーズ", &dict).unwrap();
+        assert_eq!(user.ignored("まよねーず"), ["マヨネーズ"]);
     }
 
     #[test]

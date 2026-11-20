@@ -175,6 +175,33 @@ check('yes で消して何も確定しない', { snaps[2].preedit, snaps[2].list
 check('ユーザー辞書からも消える', table.concat(vim.fn.readfile(user_dict), '\n'):find('りんぜ /', 1, true), nil)
 check('学習の履歴からも消える', in_history('りんぜ\t'), false)
 
+local function stop_rinzed()
+  vim.fn.system({ 'pkill', '-f', '--socket ' .. socket })
+  vim.wait(5000, function()
+    return vim.fn.system({ 'pgrep', '-f', '--socket ' .. socket }) == ''
+  end, 50)
+end
+
+local function sent_until_registration(keys)
+  seen = {}
+  type_in_new_buffer(keys .. space_until_registration .. '<C-g><C-g><C-g>')
+  return table.concat(seen, '\n')
+end
+
+text, snaps = type_in_new_buffer('Asita<Space>' .. snapshot .. 'Xyes<CR>')
+local purged = snaps[1].preedit:gsub('^▼', '')
+check('システム辞書の語を X で消すと、ddskk と同じくユーザー辞書に skk-ignore-dic-word を書く', vim.tbl_contains(vim.fn.readfile(user_dict), 'あした /(skk-ignore-dic-word "' .. purged .. '")/'), true)
+local after_purge = sent_until_registration('Asita<Space>')
+print('あした で X のあと送った候補: ' .. vim.inspect(seen))
+check('消したシステム辞書の語は辞書の候補にも生成した表記にも出ない', { #seen > 1, after_purge:find(purged, 1, true) }, { true, nil })
+stop_rinzed()
+check('rinzed を起動し直しても消したシステム辞書の語は出ない', sent_until_registration('Asita<Space>'):find(purged, 1, true), nil)
+text = type_in_new_buffer('Asita<Space>' .. space_until_registration .. 'Myouniti<Space><CR><CR>')
+check('消した語を辞書登録し直せる', text, purged)
+check('辞書登録し直すと skk-ignore-dic-word から外す', vim.tbl_contains(vim.fn.readfile(user_dict), 'あした /' .. purged .. '/'), true)
+text, snaps = type_in_new_buffer('Asita<Space>' .. snapshot)
+check('辞書登録し直した語は候補に出る', snaps[1].preedit, '▼' .. purged)
+
 local position_snapshot = '<F8>'
 vim.keymap.set('i', position_snapshot, function()
   local marks = vim.api.nvim_buf_get_extmarks(0, vim.api.nvim_create_namespace('rinze'), 0, -1, {})

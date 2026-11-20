@@ -3,7 +3,7 @@
 use std::io;
 use std::path::PathBuf;
 
-use rinze_dict::{Dictionary, Section};
+use rinze_dict::{Dictionary, Purge, Section};
 use rinze_engine::Midashi;
 
 use crate::file;
@@ -37,18 +37,19 @@ impl UserDictionary {
         }
     }
 
-    pub fn lookup(&self, key: &str) -> &[String] {
+    pub fn lookup(&self, key: &str) -> impl Iterator<Item = &str> {
         self.dict.lookup(key)
+    }
+
+    /// 消してあり、システム辞書や生成した表記から取らない語。
+    pub fn ignored(&self, key: &str) -> &[String] {
+        self.dict.ignored(key)
     }
 
     /// 語が辞書の書式で書けなければ何もせずにエラーを返す。
     pub fn register(&mut self, midashi: &Midashi, word: &str) -> io::Result<()> {
-        let section = match midashi.okuri() {
-            Some(_) => Section::OkuriAri,
-            None => Section::OkuriNasi,
-        };
         self.rewrite(|text| {
-            rinze_dict::add_entry(text, section, &midashi.key(), word).ok_or_else(|| {
+            rinze_dict::add_entry(text, section(midashi), &midashi.key(), word).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("「{word}」は SKK 辞書の候補として書けない"),
@@ -57,15 +58,29 @@ impl UserDictionary {
         })
     }
 
-    /// 語がユーザー辞書に無ければ何もせずに false を返す。
-    pub fn purge(&mut self, midashi: &Midashi, word: &str) -> io::Result<bool> {
-        let mut found = false;
+    /// ユーザー辞書だけにある語は行から除く。システム辞書にある語と、どちらの辞書にも無い語 (生成した表記) は、
+    /// ddskk と同じく `(skk-ignore-dic-word "語")` を書いて、その見出しの候補から外す。
+    /// ユーザー辞書が変わらなければ false を返す。
+    pub fn purge(
+        &mut self,
+        midashi: &Midashi,
+        word: &str,
+        shared: &Dictionary,
+    ) -> io::Result<bool> {
+        let key = midashi.key();
+        let in_user = self.lookup(&key).any(|w| w == word);
+        let purge = match shared.written(&key, word) {
+            Some(written) => Purge::Ignore(written),
+            None if in_user => Purge::Delete,
+            None => Purge::Ignore(word),
+        };
+        let mut changed = false;
         self.rewrite(|text| {
-            let removed = rinze_dict::remove_entry(text, &midashi.key(), word);
-            found = removed.is_some();
-            Ok(removed.unwrap_or_else(|| text.to_string()))
+            let purged = rinze_dict::purge_entry(text, section(midashi), &key, word, purge);
+            changed = purged.is_some();
+            Ok(purged.unwrap_or_else(|| text.to_string()))
         })?;
-        Ok(found)
+        Ok(changed)
     }
 
     fn rewrite(&mut self, edit: impl FnOnce(&str) -> io::Result<String>) -> io::Result<()> {
@@ -78,6 +93,13 @@ impl UserDictionary {
         };
         self.dict = Dictionary::parse(&text);
         Ok(())
+    }
+}
+
+fn section(midashi: &Midashi) -> Section {
+    match midashi.okuri() {
+        Some(_) => Section::OkuriAri,
+        None => Section::OkuriNasi,
     }
 }
 
@@ -115,13 +137,16 @@ mod tests {
         user.register(&okuri_ari("あ", 'e', "え"), "和").unwrap();
         user.register(&Midashi::Abbrev("file".into()), "ファイル")
             .unwrap();
-        assert_eq!(user.lookup("あe"), ["和"]);
+        assert_eq!(user.lookup("あe").collect::<Vec<_>>(), ["和"]);
         assert!(user.register(&kana("あ"), "a/b").is_err());
 
         let reopened = UserDictionary::open(path.clone()).unwrap();
-        assert_eq!(reopened.lookup("まよねーず"), ["マヨネーズ"]);
-        assert_eq!(reopened.lookup("あe"), ["和"]);
-        assert_eq!(reopened.lookup("file"), ["ファイル"]);
+        assert_eq!(
+            reopened.lookup("まよねーず").collect::<Vec<_>>(),
+            ["マヨネーズ"]
+        );
+        assert_eq!(reopened.lookup("あe").collect::<Vec<_>>(), ["和"]);
+        assert_eq!(reopened.lookup("file").collect::<Vec<_>>(), ["ファイル"]);
         let text = fs::read_to_string(&path).unwrap();
         assert!(
             text.ends_with(";; okuri-nasi entries.\nfile /ファイル/\nまよねーず /マヨネーズ/\n"),
@@ -139,18 +164,27 @@ mod tests {
     }
 
     #[test]
-    fn 消した語はファイルからも消え_無い語を消しても何も変えない() {
+    fn ユーザー辞書だけの語は行から除き_ファイルにも残さない() {
         let dir =
             std::env::temp_dir().join(format!("rinze-user-dict-purge-{}", std::process::id()));
         let path = dir.join("user.jisyo");
         let mut user = UserDictionary::open(path.clone()).unwrap();
         user.register(&kana("りんぜ"), "凛是").unwrap();
         user.register(&kana("りんぜ"), "林是").unwrap();
-        assert!(user.purge(&kana("りんぜ"), "凛是").unwrap());
-        assert_eq!(user.lookup("りんぜ"), ["林是"]);
-        assert!(!user.purge(&kana("りんぜ"), "凛是").unwrap());
+        assert!(
+            user.purge(&kana("りんぜ"), "凛是", &Dictionary::default())
+                .unwrap()
+        );
+        assert_eq!(user.lookup("りんぜ").collect::<Vec<_>>(), ["林是"]);
         let reopened = UserDictionary::open(path.clone()).unwrap();
-        assert_eq!(reopened.lookup("りんぜ"), ["林是"]);
+        assert_eq!(reopened.lookup("りんぜ").collect::<Vec<_>>(), ["林是"]);
+        assert!(reopened.ignored("りんぜ").is_empty());
+        let shared = Dictionary::parse("あした /明日/\n");
+        assert!(user.purge(&kana("あした"), "明日", &shared).unwrap());
+        assert!(
+            !user.purge(&kana("あした"), "明日", &shared).unwrap(),
+            "既に外した語をもう一度消しても何も変えない"
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 

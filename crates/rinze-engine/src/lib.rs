@@ -140,6 +140,10 @@ pub struct Response {
     /// true の間は [`Key::Kakutei`] 以外のキーをすべて処理せずに返す (`handled` は false、`commit` は空)。
     /// フロントエンドは [`Key::Kakutei`] 以外のキーを送らずに、そのまま処理してよい。
     pub passthrough: bool,
+    /// 見出しの入力中 (▽) に Space で変換する読み。送りがなの入力中、abbrev、辞書登録の入力欄では None。
+    pub reading: Option<String>,
+    /// [`Session`] が要求を処理するたびに増える。[`Session::choose`] に渡し、選んだあとに打ったキーが無いことを確かめる。
+    pub version: u64,
 }
 
 /// Emacs のミニバッファに当たる 1 行。フロントエンドは `prompt` `text` `preedit` をこの順に並べて表示する。
@@ -165,6 +169,7 @@ pub struct CandidatePage {
 #[derive(Debug, Default)]
 pub struct Session {
     input: Input,
+    version: u64,
 }
 
 #[derive(Debug)]
@@ -334,6 +339,7 @@ impl Session {
         left_context: &str,
         converter: &mut dyn Converter,
     ) -> Response {
+        self.version += 1;
         let mut step = Step {
             left_context,
             commit: String::new(),
@@ -352,15 +358,42 @@ impl Session {
 
     /// 入力途中のものを表示どおりに確定し、状態を空にする。モードは変えない。フロントエンドが入力先を離れるときに使う。
     pub fn flush(&mut self, converter: &mut dyn Converter) -> Response {
+        self.version += 1;
         let commit = self.take_pending(converter);
         self.response(true, commit)
     }
 
     /// [`Session::flush`] したうえで、モードを始めのひらがなに戻す。フロントエンドが入力を有効にしたときに使う。
     pub fn reset(&mut self, converter: &mut dyn Converter) -> Response {
+        self.version += 1;
         let commit = self.take_pending(converter);
         self.input = Input::default();
         self.response(true, commit)
+    }
+
+    /// 見出しの入力中 (▽) に、[`Response::reading`] の候補から `word` を選んで確定する。Space で変換して `word` まで送って確定したのと同じに扱う。
+    /// `version` が最後の応答の版でなければ (そのあとにキーを処理していれば)、何もせずに `handled` を false で返す。
+    /// `word` が見出しの候補に無いときも同じ。
+    pub fn choose(
+        &mut self,
+        version: u64,
+        word: &str,
+        left_context: &str,
+        converter: &mut dyn Converter,
+    ) -> Response {
+        let fresh = version == self.version;
+        self.version += 1;
+        let mut step = Step {
+            left_context,
+            commit: String::new(),
+            next_mode: None,
+            converter,
+        };
+        let chosen = match &mut self.input {
+            Input::Kana(kana) if fresh => kana.choose(word, &mut step),
+            _ => false,
+        };
+        self.response(chosen, step.commit)
     }
 
     fn take_pending(&mut self, converter: &mut dyn Converter) -> String {
@@ -385,6 +418,11 @@ impl Session {
             minibuffer: self.minibuffer(1),
             mode: self.mode(),
             passthrough: matches!(self.input, Input::Latin(Latin::Ascii)),
+            reading: match &self.input {
+                Input::Kana(kana) => kana.reading(),
+                Input::Latin(_) => None,
+            },
+            version: self.version,
         }
     }
 
@@ -608,6 +646,33 @@ impl KanaInput {
         };
         self.phase = Phase::Direct { roman };
         handled
+    }
+
+    fn reading(&self) -> Option<String> {
+        let Phase::Midashi { kana, roman } = &self.phase else {
+            return None;
+        };
+        let reading = format!("{kana}{}", roman.clone().flush());
+        (!reading.is_empty()).then_some(reading)
+    }
+
+    fn choose(&mut self, word: &str, step: &mut Step) -> bool {
+        let Some(reading) = self.reading() else {
+            return false;
+        };
+        let midashi = Midashi::Kana {
+            reading,
+            okuri: None,
+        };
+        let left_context = step.left_context_with_commit();
+        let words = step.converter.candidates(&midashi.query(&left_context));
+        let Some(index) = words.iter().position(|w| w == word) else {
+            return false;
+        };
+        let pick = if index == 0 { Pick::First } else { Pick::Other };
+        step.commit_candidate(&midashi, word, pick, self.script);
+        self.phase = Phase::default();
+        true
     }
 
     fn commit_midashi(&self, kana: &str, switch: Switch, step: &mut Step) {

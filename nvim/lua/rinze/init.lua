@@ -5,6 +5,8 @@ local config = {
   cmd = nil,
   socket = nil,
   startup_timeout = 30000,
+  -- true なら見出しの入力中に変換候補を blink.cmp のメニューに出す
+  blink = false,
   -- status() が返す、モードごとの表示
   mode_labels = {
     hiragana = 'かな',
@@ -25,6 +27,8 @@ local state = {
   keys_mapped = false,
   float_buf = nil,
   float_win = nil,
+  blink = nil,
+  held_commit = nil,
 }
 
 local special_keys = {
@@ -35,8 +39,6 @@ local special_keys = {
   ['<C-q>'] = 'ctrl-q',
 }
 
-local kakutei_key = '<C-j>'
-
 local function try_connect(path)
   local ok, chan = pcall(vim.fn.sockconnect, 'pipe', path, { rpc = true })
   if ok and chan > 0 then
@@ -46,12 +48,16 @@ end
 
 local EXIT_ANOTHER_RINZED_SERVES = 0
 
+local function socket_path()
+  return config.socket or require('rinze.socket').default()
+end
+
 local function connect()
   -- 常駐プロセスが落ちて閉じた接続は情報が空になるので、つなぎ直す
   if state.chan and next(vim.api.nvim_get_chan_info(state.chan)) then
     return state.chan
   end
-  local path = config.socket or require('rinze.socket').default()
+  local path = socket_path()
   local chan = try_connect(path)
   if not chan then
     if not config.cmd then
@@ -179,7 +185,7 @@ local function preedit_position()
   return anchor.buf, pos[1], pos[2]
 end
 
-local function show(res)
+local function show(res, left_after_commit)
   if state.anchor and vim.api.nvim_buf_is_valid(state.anchor.buf) then
     vim.api.nvim_buf_clear_namespace(state.anchor.buf, ns, 0, -1)
   end
@@ -197,6 +203,9 @@ local function show(res)
   end
   show_float(res.minibuffer, res.candidates)
   follow_mode(res)
+  if state.blink then
+    state.blink.update(res, left_after_commit)
+  end
 end
 
 -- 確定文字列は打鍵として先読みに入れる。API で書き込むと `.` で繰り返せず、undo も打鍵と別の単位になる。
@@ -208,6 +217,19 @@ local function type_ahead(commit, lhs)
   if commit ~= '' then
     vim.api.nvim_feedkeys(commit, 'ni', true)
   end
+end
+
+local function commit_or_hold(commit)
+  if state.held_commit then
+    state.held_commit = state.held_commit .. commit
+  else
+    type_ahead(commit)
+  end
+end
+
+local function left_of_cursor()
+  local col = vim.api.nvim_win_get_cursor(0)[2]
+  return vim.api.nvim_get_current_line():sub(1, col)
 end
 
 local function flush_in_place()
@@ -240,54 +262,107 @@ local function flush_if_cursor_left_preedit()
   end
 end
 
+local function choose(version, word)
+  local left = left_of_cursor()
+  local ok, res = pcall(request, 'choose', version, word, left)
+  if not ok then
+    vim.notify(tostring(res), vim.log.levels.ERROR)
+    return
+  end
+  commit_or_hold(res.commit)
+  show(res, left .. res.commit)
+end
+
+local function settle_menu(name)
+  if not state.blink then
+    return '', false
+  end
+  -- settle の vim.wait(0) は、blink.cmp が後回しにしたほかのキーの処理も走らせ、その中でもここを通る
+  local outer = state.held_commit
+  state.held_commit = ''
+  local ok, consumed = pcall(state.blink.settle, name)
+  local held = state.held_commit
+  state.held_commit = outer
+  if not ok then
+    vim.notify(tostring(consumed), vim.log.levels.ERROR)
+    consumed = false
+  end
+  return held, consumed
+end
+
 local function on_key(name, lhs)
+  local held, consumed = settle_menu(name)
+  if consumed then
+    type_ahead(held)
+    return
+  end
   -- CursorMovedI は先読みが尽きるまで起きないので、続けて打たれたキーの前でも確かめる
   flush_if_cursor_left_preedit()
-  local col = vim.api.nvim_win_get_cursor(0)[2]
-  local left = vim.api.nvim_get_current_line():sub(1, col)
+  local left = left_of_cursor() .. held
   local ok, res = pcall(request, 'key', name, left)
   if not ok then
     vim.notify(tostring(res), vim.log.levels.ERROR)
-    type_ahead('', lhs)
+    type_ahead(held, lhs)
     return
   end
-  type_ahead(res.commit, not res.handled and lhs or nil)
-  show(res)
+  type_ahead(held .. res.commit, not res.handled and lhs or nil)
+  show(res, left .. res.commit)
 end
 
-local function each_input_key(f)
-  for lhs, name in pairs(special_keys) do
-    f(lhs, name)
-  end
-  for byte = 33, 126 do
-    local c = string.char(byte)
-    local lhs = ({ ['<'] = '<lt>', ['|'] = '<Bar>', ['\\'] = '<Bslash>' })[c] or c
-    f(lhs, c)
+local function on_escape()
+  local held = settle_menu('escape')
+  local ok, res = pcall(request, 'flush')
+  type_ahead(held .. (ok and res.commit or ''), '<Esc>')
+  if ok then
+    show(res)
   end
 end
 
-local function map_key(lhs, name)
-  vim.keymap.set('i', lhs, function()
-    on_key(name, lhs)
-  end, { nowait = true, silent = true, desc = 'rinze' })
+local input_keys = {}
+local function add_key(lhs, name)
+  local key = { lhs = lhs, name = name, index = #input_keys + 1 }
+  table.insert(input_keys, key)
+  return key
+end
+for lhs, name in pairs(special_keys) do
+  add_key(lhs, name)
+end
+for byte = 33, 126 do
+  local c = string.char(byte)
+  add_key(({ ['<'] = '<lt>', ['|'] = '<Bar>', ['\\'] = '<Bslash>' })[c] or c, c)
+end
+local kakutei = add_key('<C-j>', 'ctrl-j')
+
+function M._press(index)
+  local key = input_keys[index]
+  on_key(key.name, key.lhs)
+end
+
+M._escape = on_escape
+
+-- 右辺は Lua 関数でなく <Cmd> にする。blink.cmp がバッファローカルに割り当てたキーの fallback から呼ばれたとき、
+-- Lua 関数の右辺は vim.schedule で後回しにされ、続けて打ったキーと順序が入れ替わる
+local function map_key(key)
+  local rhs = string.format("<Cmd>lua require('rinze')._press(%d)<CR>", key.index)
+  vim.keymap.set('i', key.lhs, rhs, { nowait = true, silent = true, desc = 'rinze' })
 end
 
 function map_input_keys()
-  each_input_key(map_key)
-  vim.keymap.set('i', '<Esc>', function()
-    local ok, res = pcall(request, 'flush')
-    type_ahead(ok and res.commit or '', '<Esc>')
-    if ok then
-      show(res)
+  for _, key in ipairs(input_keys) do
+    if key ~= kakutei then
+      map_key(key)
     end
-  end, { nowait = true, silent = true, desc = 'rinze' })
+  end
+  vim.keymap.set('i', '<Esc>', "<Cmd>lua require('rinze')._escape()<CR>", { nowait = true, silent = true, desc = 'rinze' })
   state.keys_mapped = true
 end
 
 function unmap_input_keys()
-  each_input_key(function(lhs)
-    pcall(vim.keymap.del, 'i', lhs)
-  end)
+  for _, key in ipairs(input_keys) do
+    if key ~= kakutei then
+      pcall(vim.keymap.del, 'i', key.lhs)
+    end
+  end
   pcall(vim.keymap.del, 'i', '<Esc>')
   state.keys_mapped = false
 end
@@ -302,7 +377,11 @@ function M.enable()
     return
   end
   local res = request('reset')
-  map_key(kakutei_key, 'ctrl-j')
+  if config.blink then
+    state.blink = require('rinze.blink')
+    state.blink.attach(socket_path(), { choose = choose })
+  end
+  map_key(kakutei)
   local group = vim.api.nvim_create_augroup('rinze', { clear = true })
   -- 挿入モードのまま別のウィンドウへ移ったときは InsertLeave が起きない
   vim.api.nvim_create_autocmd({ 'InsertLeave', 'WinLeave', 'BufLeave' }, {
@@ -323,8 +402,12 @@ function M.disable()
   end
   flush_in_place()
   unmap_input_keys()
-  pcall(vim.keymap.del, 'i', kakutei_key)
+  pcall(vim.keymap.del, 'i', kakutei.lhs)
   vim.api.nvim_del_augroup_by_name('rinze')
+  if state.blink then
+    state.blink.detach()
+    state.blink = nil
+  end
   state.enabled = false
   state.mode = nil
   vim.cmd.redrawstatus()
