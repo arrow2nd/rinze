@@ -240,6 +240,33 @@ check('u で 1 回の挿入をまとめて戻す', text, '')
 text = type_into({ '' }, 'iQasita<Space>da/file<Space>wo')
 check('Q で見出しを始め、/ で英字の見出しを変換する', text, '明日だファイルを')
 
+-- llama.vim の補完候補と同じく、カーソルの位置に overlay の仮想テキストを置く
+local suggest = '<F7>'
+vim.keymap.set('i', suggest, function()
+  local row, col = unpack(vim.api.nvim_win_get_cursor(0))
+  vim.api.nvim_buf_set_extmark(0, vim.api.nvim_create_namespace('rinze-test-suggestion'), row - 1, col, {
+    virt_text = { { '候補', 'Comment' } },
+    virt_text_pos = 'overlay',
+  })
+end)
+local screen_snapshot = '<F6>'
+vim.keymap.set('i', screen_snapshot, function()
+  vim.cmd.redraw()
+  local row = vim.fn.win_screenpos(0)[1] + vim.fn.winline() - 1
+  local cells = {}
+  for col = 1, vim.o.columns do
+    table.insert(cells, vim.fn.screenstring(row, col))
+  end
+  table.insert(snapshots, vim.trim(table.concat(cells)))
+end)
+
+text, snaps = type_into({ '' }, 'ikore' .. suggest .. 'Asita' .. screen_snapshot .. '<Space>' .. screen_snapshot)
+check('カーソルの位置にほかのプラグインの overlay があっても見出しが見える', snaps[1], 'これ▽あした候補')
+check('カーソルの位置にほかのプラグインの overlay があっても候補が見える', snaps[2], 'これ▼明日候補')
+
+text, snaps = type_into({ '' }, 'ikoreAsita' .. suggest .. screen_snapshot)
+check('見出しの表示中に置かれた overlay は見出しの後ろに出る', snaps[1], 'これ▽あした候補')
+
 text, snaps = type_into({ '駅で友達に' }, 'AATt' .. position_snapshot .. '<CR>')
 check('別の文脈では選び直した候補に引っぱられない', snaps[1].preedit, '▼会っt')
 

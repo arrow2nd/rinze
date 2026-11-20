@@ -304,11 +304,15 @@ local function show(res, left_after_commit)
   state.preedit = res.preedit
   if res.preedit ~= '' then
     local row, col = unpack(vim.api.nvim_win_get_cursor(0))
-    -- 右 gravity の印は、このあと先読みから入る確定文字列に押されて、その後ろへ動く
+    -- 右 gravity の印は、このあと先読みから入る確定文字列に押されて、その後ろへ動く。
+    -- Neovim は同じ位置の overlay の仮想テキストを、priority が低い (同じなら先に置かれた) inline の仮想テキストの
+    -- 後ろに描き、それ以外の inline の仮想テキストには上から重ねる。llama.vim などがカーソルの位置に先に置いた
+    -- overlay に隠されないよう、priority を最低にする
     local mark = vim.api.nvim_buf_set_extmark(0, ns, row - 1, col, {
       virt_text = { { res.preedit, 'RinzePreedit' } },
       virt_text_pos = 'inline',
       right_gravity = true,
+      priority = 0,
     })
     state.anchor = { buf = vim.api.nvim_get_current_buf(), mark = mark }
   end
