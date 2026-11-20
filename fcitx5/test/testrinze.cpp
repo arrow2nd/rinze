@@ -335,6 +335,11 @@ void typing(Instance *instance) {
     FCITX_ASSERT(t.preedit() == "▼りんぜ") << t.preedit();
     t.type("ka");
     FCITX_ASSERT(t.auxUp() == "[辞書登録] りんぜ: か") << t.auxUp();
+    FCITX_ASSERT(t.press("l"));
+    FCITX_ASSERT(t.modeLabel() == "aA") << t.modeLabel();
+    FCITX_ASSERT(t.auxUp() == "[辞書登録] りんぜ: か") << "モードの知らせで入力欄を隠さない: " << t.auxUp();
+    FCITX_ASSERT(t.press("Control+j"));
+    FCITX_ASSERT(t.auxUp() == "[辞書登録] りんぜ: か") << t.auxUp();
     t.type("K");
     FCITX_ASSERT(t.auxUp() == "[辞書登録] りんぜ: か▽k") << t.auxUp();
     t.cancelAll();

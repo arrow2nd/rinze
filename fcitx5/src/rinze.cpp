@@ -355,7 +355,8 @@ public:
     void modeChanged(InputContext &ic, bool announce) {
         modeAction_.update(&ic);
         ic.updateUserInterface(UserInterfaceComponent::StatusArea);
-        if (announce) {
+        const auto &panel = ic.inputPanel();
+        if (announce && panel.auxUp().empty() && !panel.candidateList()) {
             instance_->showInputMethodInformation(&ic);
         }
     }
