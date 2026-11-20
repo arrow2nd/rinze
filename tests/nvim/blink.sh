@@ -21,3 +21,4 @@ export XDG_CONFIG_HOME=$work/config XDG_DATA_HOME=$work/data XDG_STATE_HOME=$wor
 for preset in default enter-readme-override enter-unchanged; do
   RINZE_BLINK_PRESET=$preset nvim --headless --clean -l "$root/tests/nvim/blink.lua" "$rinzed" "$RINZE_MODEL" "$RINZE_DICT" "$socket" "$work/user.jisyo" "$work/history.tsv" "$RINZE_BLINK"
 done
+nvim --headless --clean -l "$root/tests/nvim/blink_cmdline.lua" "$rinzed" "$RINZE_MODEL" "$RINZE_DICT" "$socket" "$work/user.jisyo" "$work/history.tsv" "$RINZE_BLINK"

@@ -228,9 +228,9 @@ check('送りがなの入力中はメニューを出さない', { snaps[1].preed
 
 local press = rinze._press
 local key_ms
-rinze._press = function(index)
+rinze._press = function(...)
   local started = vim.uv.hrtime()
-  press(index)
+  press(...)
   table.insert(key_ms, (vim.uv.hrtime() - started) / 1e6)
 end
 

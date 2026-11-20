@@ -18,27 +18,6 @@ local config = {
 }
 
 local ns = vim.api.nvim_create_namespace('rinze')
-local state = {
-  chan = nil,
-  enabled = false,
-  preedit = '',
-  anchor = nil,
-  mode = nil,
-  passthrough = false,
-  held = nil,
-  float_buf = nil,
-  float_win = nil,
-  blink = nil,
-  held_commit = nil,
-}
-
-local special_keys = {
-  ['<Space>'] = 'space',
-  ['<CR>'] = 'enter',
-  ['<BS>'] = 'backspace',
-  ['<C-g>'] = 'ctrl-g',
-  ['<C-q>'] = 'ctrl-q',
-}
 
 local function try_connect(path)
   local ok, chan = pcall(vim.fn.sockconnect, 'pipe', path, { rpc = true })
@@ -53,10 +32,11 @@ local function socket_path()
   return config.socket or require('rinze.socket').default()
 end
 
-local function connect()
+-- rinzed は接続ごとに入力状態を持つので、入力の場所ごとに接続を分ける
+local function connect(session)
   -- 常駐プロセスが落ちて閉じた接続は情報が空になるので、つなぎ直す
-  if state.chan and next(vim.api.nvim_get_chan_info(state.chan)) then
-    return state.chan
+  if session.chan and next(vim.api.nvim_get_chan_info(session.chan)) then
+    return session.chan
   end
   local path = socket_path()
   local chan = try_connect(path)
@@ -93,31 +73,38 @@ local function connect()
       error('rinze: 常駐プロセスが' .. reason)
     end
   end
-  state.chan = chan
+  session.chan = chan
   return chan
 end
 
-local function request(method, ...)
-  local ok, res = pcall(vim.rpcrequest, connect(), method, ...)
+local function request(session, method, ...)
+  local ok, res = pcall(vim.rpcrequest, connect(session), method, ...)
   if not ok then
-    state.chan = nil
+    session.chan = nil
     error(res)
   end
   return res
 end
 
-local function close_float()
-  if state.float_win and vim.api.nvim_win_is_valid(state.float_win) then
-    vim.api.nvim_win_close(state.float_win, true)
+local function disconnect(session)
+  if session.chan then
+    pcall(vim.fn.chanclose, session.chan)
+    session.chan = nil
   end
-  state.float_win = nil
+end
+
+local function close_float(session)
+  if session.float_win and vim.api.nvim_win_is_valid(session.float_win) then
+    vim.api.nvim_win_close(session.float_win, true)
+  end
+  session.float_win = nil
 end
 
 local function present(v)
   return v ~= nil and v ~= vim.NIL
 end
 
-local function show_float(minibuffer, candidates)
+local function show_float(session, minibuffer, candidates)
   local lines = {}
   if present(minibuffer) then
     table.insert(lines, minibuffer.prompt .. minibuffer.text .. minibuffer.preedit)
@@ -130,52 +117,57 @@ local function show_float(minibuffer, candidates)
     table.insert(lines, table.concat(parts, '  ') .. string.format('  [%d/%d]', candidates.page + 1, candidates.pages))
   end
   if #lines == 0 then
-    close_float()
+    close_float(session)
     return
   end
-  if not (state.float_buf and vim.api.nvim_buf_is_valid(state.float_buf)) then
-    state.float_buf = vim.api.nvim_create_buf(false, true)
+  if not (session.float_buf and vim.api.nvim_buf_is_valid(session.float_buf)) then
+    session.float_buf = vim.api.nvim_create_buf(false, true)
   end
-  vim.api.nvim_buf_set_lines(state.float_buf, 0, -1, false, lines)
+  vim.api.nvim_buf_set_lines(session.float_buf, 0, -1, false, lines)
   local width = 1
   for _, line in ipairs(lines) do
     width = math.max(width, vim.fn.strdisplaywidth(line))
   end
-  local opts = {
-    relative = 'cursor',
-    row = 1,
-    col = 0,
-    width = width,
-    height = #lines,
-    style = 'minimal',
-    focusable = false,
-  }
-  if state.float_win and vim.api.nvim_win_is_valid(state.float_win) then
-    vim.api.nvim_win_set_config(state.float_win, opts)
+  local opts = session.surface.float_config(width, #lines)
+  if session.float_win and vim.api.nvim_win_is_valid(session.float_win) then
+    vim.api.nvim_win_set_config(session.float_win, opts)
   else
     opts.noautocmd = true
-    state.float_win = vim.api.nvim_open_win(state.float_buf, false, opts)
+    session.float_win = vim.api.nvim_open_win(session.float_buf, false, opts)
   end
 end
 
-local input_keys = {}
-local function add_key(lhs, name)
-  local key = { lhs = lhs, lhsraw = vim.keycode(lhs), name = name, index = #input_keys + 1 }
-  -- 右辺は Lua 関数でなく <Cmd> にする。blink.cmp がバッファローカルに割り当てたキーの fallback から呼ばれたとき、
-  -- Lua 関数の右辺は vim.schedule で後回しにされ、続けて打ったキーと順序が入れ替わる
-  key.rhs = string.format("<Cmd>lua require('rinze')._press(%d)<CR>", key.index)
-  table.insert(input_keys, key)
-  return key
-end
-for lhs, name in pairs(special_keys) do
-  add_key(lhs, name)
-end
+local KEYS = {
+  { '<Space>', 'space' },
+  { '<CR>', 'enter' },
+  { '<BS>', 'backspace' },
+  { '<C-g>', 'ctrl-g' },
+  { '<C-q>', 'ctrl-q' },
+  { '<C-j>', 'ctrl-j' },
+}
 for byte = 33, 126 do
   local c = string.char(byte)
-  add_key(({ ['<'] = '<lt>', ['|'] = '<Bar>', ['\\'] = '<Bslash>' })[c] or c, c)
+  table.insert(KEYS, { ({ ['<'] = '<lt>', ['|'] = '<Bar>', ['\\'] = '<Bslash>' })[c] or c, c })
 end
-local kakutei = add_key('<C-j>', 'ctrl-j')
-local escape = add_key('<Esc>', 'escape')
+local KAKUTEI = 'ctrl-j'
+local ESCAPE = 'escape'
+
+local function key_list(surface_id, extra)
+  local keys = {}
+  for _, spec in ipairs(vim.list_extend(vim.deepcopy(KEYS), extra)) do
+    local index = #keys + 1
+    keys[index] = {
+      lhs = spec[1],
+      lhsraw = vim.keycode(spec[1]),
+      name = spec[2],
+      index = index,
+      -- 右辺は Lua 関数でなく <Cmd> にする。blink.cmp がバッファローカルに割り当てたキーの fallback から呼ばれたとき、
+      -- Lua 関数の右辺は vim.schedule で後回しにされ、続けて打ったキーと順序が入れ替わる
+      rhs = string.format("<Cmd>lua require('rinze')._press('%s', %d)<CR>", surface_id, index),
+    }
+  end
+  return keys
+end
 
 -- blink.cmp は自分のキーを挿入モードに入るときにバッファローカルに置き、fallback ではそのとき無かった
 -- バッファローカルの割り当ての代わりに global な割り当てを探す。blink.cmp のキーは奪わず、rinze を global に置いて
@@ -183,13 +175,13 @@ local escape = add_key('<Esc>', 'escape')
 local BLINK_DESC_PREFIX = 'blink.cmp: '
 local OWN_DESC = 'rinze'
 
-local function keymap_lookup()
+local function keymap_lookup(mode)
   local by_scope = {}
   return function(buf, key)
     local scope = buf or 'global'
     if not by_scope[scope] then
       local by_lhs = {}
-      for _, map in ipairs(buf and vim.api.nvim_buf_get_keymap(buf, 'i') or vim.api.nvim_get_keymap('i')) do
+      for _, map in ipairs(buf and vim.api.nvim_buf_get_keymap(buf, mode) or vim.api.nvim_get_keymap(mode)) do
         -- <C-j> などは lhsraw が修飾キーつきの形になり、lhsrawalt が 1 バイトの形になる
         by_lhs[map.lhsraw] = map
         if map.lhsrawalt then
@@ -202,23 +194,24 @@ local function keymap_lookup()
   end
 end
 
-local function take(buf, key, find)
+local function take(surface, buf, key, find)
+  local mode = surface.map_mode
   local scope = buf
   local original = find(buf, key)
   if original and vim.startswith(original.desc or '', BLINK_DESC_PREFIX) then
     scope = nil
     original = find(nil, key)
   end
-  local opts = { noremap = true, nowait = true, silent = true, desc = OWN_DESC }
+  local opts = { noremap = true, nowait = true, silent = surface.silent_keys, desc = OWN_DESC }
   if scope then
-    vim.api.nvim_buf_set_keymap(scope, 'i', key.lhs, key.rhs, opts)
+    vim.api.nvim_buf_set_keymap(scope, mode, key.lhs, key.rhs, opts)
   else
-    vim.api.nvim_set_keymap('i', key.lhs, key.rhs, opts)
+    vim.api.nvim_set_keymap(mode, key.lhs, key.rhs, opts)
   end
   return { buf = scope, original = original, aside = false }
 end
 
-local function restore(key, taken, find)
+local function restore(mode, key, taken, find)
   if taken.buf and not vim.api.nvim_buf_is_valid(taken.buf) then
     return
   end
@@ -227,9 +220,9 @@ local function restore(key, taken, find)
     return
   end
   if taken.buf then
-    vim.api.nvim_buf_del_keymap(taken.buf, 'i', key.lhs)
+    vim.api.nvim_buf_del_keymap(taken.buf, mode, key.lhs)
   else
-    vim.api.nvim_del_keymap('i', key.lhs)
+    vim.api.nvim_del_keymap(mode, key.lhs)
   end
   if taken.original then
     -- mapset はバッファローカルの割り当てをカレントバッファに置く
@@ -239,53 +232,123 @@ local function restore(key, taken, find)
   end
 end
 
-local function release(held, index, find)
+local function release(session, index, find)
+  local held = session.held
   local taken = held.keys[index]
   held.keys[index] = nil
   if not taken.aside then
-    restore(input_keys[index], taken, find)
+    restore(session.surface.map_mode, session.keys[index], taken, find)
   end
 end
 
-local function sync()
+local function sync(session)
+  local mode = session.surface.map_mode
   local buf = vim.api.nvim_get_current_buf()
-  local inserting = state.enabled and vim.api.nvim_get_mode().mode:match('^[iR]') ~= nil
-  local held = state.held
-  if held and (held.buf ~= buf or not inserting) then
-    local find = keymap_lookup()
-    for index in pairs(held.keys) do
-      release(held, index, find)
+  local active = session.enabled and session.surface.accepts_keys()
+  if session.held and (session.held.buf ~= buf or not active) then
+    local find = keymap_lookup(mode)
+    for index in pairs(session.held.keys) do
+      release(session, index, find)
     end
-    held = nil
+    session.held = nil
   end
-  if inserting then
-    held = held or { buf = buf, keys = {} }
-    local find = keymap_lookup()
-    for _, key in ipairs(input_keys) do
-      local wanted = key == kakutei or not state.passthrough
+  if active then
+    session.held = session.held or { buf = buf, keys = {} }
+    local held = session.held
+    local find = keymap_lookup(mode)
+    for _, key in ipairs(session.keys) do
+      local wanted = key.name == KAKUTEI or not session.passthrough
       if wanted and not held.keys[key.index] then
-        held.keys[key.index] = take(buf, key, find)
+        held.keys[key.index] = take(session.surface, buf, key, find)
       elseif not wanted and held.keys[key.index] then
-        release(held, key.index, find)
+        release(session, key.index, find)
       end
     end
   end
-  state.held = held
 end
 
-local function follow_mode(res)
-  if res.passthrough ~= state.passthrough then
-    state.passthrough = res.passthrough
-    sync()
+local function follow_mode(session, res)
+  if res.passthrough ~= session.passthrough then
+    session.passthrough = res.passthrough
+    sync(session)
   end
-  if res.mode ~= state.mode then
-    state.mode = res.mode
+  if res.mode ~= session.mode then
+    session.mode = res.mode
     vim.cmd.redrawstatus()
   end
 end
 
-local function preedit_position()
-  local anchor = state.anchor
+local function show(session, res, left_after_commit)
+  session.preedit = res.preedit
+  session.surface.show_preedit(session, res.preedit)
+  show_float(session, res.minibuffer, res.candidates)
+  session.surface.redraw()
+  follow_mode(session, res)
+  if session.blink then
+    session.blink.update(res, left_after_commit)
+  end
+end
+
+local function pass_through(session, key, commit)
+  local mode = session.surface.map_mode
+  local taken = session.held and session.held.keys[key.index]
+  local find = keymap_lookup(mode)
+  local original = taken and not taken.aside and (taken.original or (taken.buf and find(nil, key)))
+  if original then
+    taken.aside = true
+    restore(mode, key, taken, find)
+    vim.api.nvim_feedkeys(
+      vim.keycode(string.format("<Cmd>lua require('rinze')._resume('%s', %d)<CR>", session.surface_id, key.index)),
+      'ni',
+      false
+    )
+    vim.api.nvim_feedkeys(key.lhsraw, 'mi', false)
+  else
+    vim.api.nvim_feedkeys(key.lhsraw, 'ni', false)
+  end
+  session.surface.insert(session, commit)
+end
+
+local function flush_in_place(session)
+  if not session.chan then
+    return
+  end
+  local ok, res = pcall(request, session, 'flush')
+  if not ok then
+    return
+  end
+  session.surface.insert_flushed(session, res.commit)
+  show(session, res)
+end
+
+local function flush_if_cursor_left_preedit(session)
+  if session.surface.cursor_left_preedit(session) then
+    flush_in_place(session)
+  end
+end
+
+-- 挿入モード。未確定文字列は extmark の inline の仮想テキストで出し、確定文字列は打鍵として入れる
+local insert = { map_mode = 'i', silent_keys = true }
+
+function insert.accepts_keys()
+  return vim.api.nvim_get_mode().mode:match('^[iR]') ~= nil
+end
+
+function insert.left_context()
+  local col = vim.api.nvim_win_get_cursor(0)[2]
+  return vim.api.nvim_get_current_line():sub(1, col)
+end
+
+-- 確定文字列は打鍵として先読みに入れる。API で書き込むと `.` で繰り返せず、undo も打鍵と別の単位になる。
+-- 'i' で先読み中のキーより前に差し込むので、後に入れるものから先に送る
+function insert.insert(_, commit)
+  if commit ~= '' then
+    vim.api.nvim_feedkeys(commit, 'ni', true)
+  end
+end
+
+local function preedit_position(session)
+  local anchor = session.anchor
   if not (anchor and vim.api.nvim_buf_is_valid(anchor.buf)) then
     return nil
   end
@@ -296,120 +359,111 @@ local function preedit_position()
   return anchor.buf, pos[1], pos[2]
 end
 
-local function show(res, left_after_commit)
-  if state.anchor and vim.api.nvim_buf_is_valid(state.anchor.buf) then
-    vim.api.nvim_buf_clear_namespace(state.anchor.buf, ns, 0, -1)
+function insert.insert_flushed(session, commit)
+  local buf, row, col = preedit_position(session)
+  if commit ~= '' and buf then
+    vim.api.nvim_buf_set_text(buf, row, col, row, col, { commit })
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    if buf == vim.api.nvim_get_current_buf() and cursor[1] == row + 1 and cursor[2] >= col then
+      vim.api.nvim_win_set_cursor(0, { cursor[1], cursor[2] + #commit })
+    end
   end
-  state.anchor = nil
-  state.preedit = res.preedit
-  if res.preedit ~= '' then
+end
+
+function insert.cursor_left_preedit(session)
+  local buf, row, col = preedit_position(session)
+  if not buf then
+    return false
+  end
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  return buf ~= vim.api.nvim_get_current_buf() or cursor[1] ~= row + 1 or cursor[2] ~= col
+end
+
+function insert.show_preedit(session, preedit)
+  if session.anchor and vim.api.nvim_buf_is_valid(session.anchor.buf) then
+    vim.api.nvim_buf_clear_namespace(session.anchor.buf, ns, 0, -1)
+  end
+  session.anchor = nil
+  if preedit ~= '' then
     local row, col = unpack(vim.api.nvim_win_get_cursor(0))
     -- 右 gravity の印は、このあと先読みから入る確定文字列に押されて、その後ろへ動く。
     -- Neovim は同じ位置の overlay の仮想テキストを、priority が低い (同じなら先に置かれた) inline の仮想テキストの
     -- 後ろに描き、それ以外の inline の仮想テキストには上から重ねる。llama.vim などがカーソルの位置に先に置いた
     -- overlay に隠されないよう、priority を最低にする
     local mark = vim.api.nvim_buf_set_extmark(0, ns, row - 1, col, {
-      virt_text = { { res.preedit, 'RinzePreedit' } },
+      virt_text = { { preedit, 'RinzePreedit' } },
       virt_text_pos = 'inline',
       right_gravity = true,
       priority = 0,
     })
-    state.anchor = { buf = vim.api.nvim_get_current_buf(), mark = mark }
-  end
-  show_float(res.minibuffer, res.candidates)
-  follow_mode(res)
-  if state.blink then
-    state.blink.update(res, left_after_commit)
+    session.anchor = { buf = vim.api.nvim_get_current_buf(), mark = mark }
   end
 end
 
--- 確定文字列は打鍵として先読みに入れる。API で書き込むと `.` で繰り返せず、undo も打鍵と別の単位になる。
--- 'i' で先読み中のキーより前に差し込むので、後に入れるものから先に送る
-local function type_ahead(commit)
-  if commit ~= '' then
-    vim.api.nvim_feedkeys(commit, 'ni', true)
-  end
+function insert.redraw() end
+
+function insert.float_config(width, height)
+  return {
+    relative = 'cursor',
+    row = 1,
+    col = 0,
+    width = width,
+    height = height,
+    style = 'minimal',
+    focusable = false,
+  }
 end
 
-local function pass_through(key, commit)
-  local taken = state.held and state.held.keys[key.index]
-  local find = keymap_lookup()
-  local original = taken and not taken.aside and (taken.original or (taken.buf and find(nil, key)))
-  if original then
-    taken.aside = true
-    restore(key, taken, find)
-    vim.api.nvim_feedkeys(vim.keycode(string.format("<Cmd>lua require('rinze')._resume(%d)<CR>", key.index)), 'ni', false)
-    vim.api.nvim_feedkeys(key.lhsraw, 'mi', false)
+local function new_session(surface_id, surface, extra_keys)
+  return {
+    surface_id = surface_id,
+    surface = surface,
+    keys = key_list(surface_id, extra_keys),
+    chan = nil,
+    enabled = false,
+    preedit = '',
+    mode = nil,
+    passthrough = false,
+    held = nil,
+  }
+end
+
+local sessions = {
+  -- Esc は挿入モードでは入力途中を確定してから抜け、コマンドラインでは割り当てずに Neovim が抜ける (入力途中は捨てる)
+  i = new_session('i', insert, { { '<Esc>', ESCAPE } }),
+  c = new_session('c', require('rinze.cmdline'), {}),
+}
+
+local function commit_or_hold(session, commit)
+  if session.held_commit then
+    session.held_commit = session.held_commit .. commit
   else
-    vim.api.nvim_feedkeys(key.lhsraw, 'ni', false)
-  end
-  type_ahead(commit)
-end
-
-local function commit_or_hold(commit)
-  if state.held_commit then
-    state.held_commit = state.held_commit .. commit
-  else
-    type_ahead(commit)
-  end
-end
-
-local function left_of_cursor()
-  local col = vim.api.nvim_win_get_cursor(0)[2]
-  return vim.api.nvim_get_current_line():sub(1, col)
-end
-
-local function flush_in_place()
-  if not state.chan then
-    return
-  end
-  local ok, res = pcall(request, 'flush')
-  if not ok then
-    return
-  end
-  local buf, row, col = preedit_position()
-  if res.commit ~= '' and buf then
-    vim.api.nvim_buf_set_text(buf, row, col, row, col, { res.commit })
-    local cursor = vim.api.nvim_win_get_cursor(0)
-    if buf == vim.api.nvim_get_current_buf() and cursor[1] == row + 1 and cursor[2] >= col then
-      vim.api.nvim_win_set_cursor(0, { cursor[1], cursor[2] + #res.commit })
-    end
-  end
-  show(res)
-end
-
-local function flush_if_cursor_left_preedit()
-  local buf, row, col = preedit_position()
-  if not buf then
-    return
-  end
-  local cursor = vim.api.nvim_win_get_cursor(0)
-  if buf ~= vim.api.nvim_get_current_buf() or cursor[1] ~= row + 1 or cursor[2] ~= col then
-    flush_in_place()
+    session.surface.insert(session, commit)
   end
 end
 
 local function choose(version, word)
-  local left = left_of_cursor()
-  local ok, res = pcall(request, 'choose', version, word, left)
+  local session = sessions.i
+  local left = session.surface.left_context()
+  local ok, res = pcall(request, session, 'choose', version, word, left)
   if not ok then
     vim.notify(tostring(res), vim.log.levels.ERROR)
     return
   end
-  commit_or_hold(res.commit)
-  show(res, left .. res.commit)
+  commit_or_hold(session, res.commit)
+  show(session, res, left .. res.commit)
 end
 
-local function settle_menu(name)
-  if not state.blink then
+local function settle_menu(session, name)
+  if not session.blink then
     return '', false
   end
   -- settle の vim.wait(0) は、blink.cmp が後回しにしたほかのキーの処理も走らせ、その中でもここを通る
-  local outer = state.held_commit
-  state.held_commit = ''
-  local ok, consumed = pcall(state.blink.settle, name)
-  local held = state.held_commit
-  state.held_commit = outer
+  local outer = session.held_commit
+  session.held_commit = ''
+  local ok, consumed = pcall(session.blink.settle, name)
+  local held = session.held_commit
+  session.held_commit = outer
   if not ok then
     vim.notify(tostring(consumed), vim.log.levels.ERROR)
     consumed = false
@@ -417,57 +471,59 @@ local function settle_menu(name)
   return held, consumed
 end
 
-local function on_key(key)
-  local held, consumed = settle_menu(key.name)
+local function on_key(session, key)
+  local held, consumed = settle_menu(session, key.name)
   if consumed then
-    type_ahead(held)
+    session.surface.insert(session, held)
     return
   end
   -- CursorMovedI は先読みが尽きるまで起きないので、続けて打たれたキーの前でも確かめる
-  flush_if_cursor_left_preedit()
-  local left = left_of_cursor() .. held
-  local ok, res = pcall(request, 'key', key.name, left)
+  flush_if_cursor_left_preedit(session)
+  local left = session.surface.left_context() .. held
+  local ok, res = pcall(request, session, 'key', key.name, left)
   if not ok then
     vim.notify(tostring(res), vim.log.levels.ERROR)
-    pass_through(key, held)
+    pass_through(session, key, held)
     return
   end
   if res.handled then
-    type_ahead(held .. res.commit)
+    session.surface.insert(session, held .. res.commit)
   else
-    pass_through(key, held .. res.commit)
+    pass_through(session, key, held .. res.commit)
   end
-  show(res, left .. res.commit)
+  show(session, res, left .. res.commit)
 end
 
-local function on_escape()
-  local held = settle_menu('escape')
-  local ok, res = pcall(request, 'flush')
-  pass_through(escape, held .. (ok and res.commit or ''))
+local function on_escape(session, key)
+  local held = settle_menu(session, ESCAPE)
+  local ok, res = pcall(request, session, 'flush')
+  pass_through(session, key, held .. (ok and res.commit or ''))
   if ok then
-    show(res)
+    show(session, res)
   end
 end
 
-function M._press(index)
-  local key = input_keys[index]
-  local taken = state.held and state.held.keys[index]
+function M._press(surface_id, index)
+  local session = sessions[surface_id]
+  local key = session.keys[index]
+  local taken = session.held and session.held.keys[index]
   -- blink.cmp の fallback は、挿入モードに入ったときにあった rinze の割り当てを覚えていて、rinze が手を離したあとも呼ぶ
   if not taken or taken.aside then
     vim.api.nvim_feedkeys(key.lhsraw, 'ni', false)
-  elseif key == escape then
-    on_escape()
+  elseif key.name == ESCAPE then
+    on_escape(session, key)
   else
-    on_key(key)
+    on_key(session, key)
   end
 end
 
-function M._resume(index)
-  local taken = state.held and state.held.keys[index]
+function M._resume(surface_id, index)
+  local session = sessions[surface_id]
+  local taken = session.held and session.held.keys[index]
   if taken and taken.aside then
-    state.held.keys[index] = nil
+    session.held.keys[index] = nil
   end
-  sync()
+  sync(session)
 end
 
 function M.setup(opts)
@@ -475,72 +531,138 @@ function M.setup(opts)
   vim.api.nvim_set_hl(0, 'RinzePreedit', { default = true, link = 'Underlined' })
 end
 
-function M.enable()
-  if state.enabled then
-    return
-  end
-  local res = request('reset')
+function insert.attach(session)
   if config.blink then
-    state.blink = require('rinze.blink')
-    state.blink.attach(socket_path(), { choose = choose })
+    session.blink = require('rinze.blink')
+    session.blink.attach(socket_path(), { choose = choose })
   end
   local group = vim.api.nvim_create_augroup('rinze', { clear = true })
+  local function sync_insert()
+    sync(session)
+  end
   -- ModeChanged は InsertEnter のあとに起きるので、InsertEnter で割り当てを置くプラグインより後に置ける。
   -- 同じ文字で始まる長い割り当てより後に置いた <nowait> だけが、続きを待たずに働く
   vim.api.nvim_create_autocmd({ 'ModeChanged', 'BufEnter' }, {
     group = group,
-    callback = sync,
+    callback = sync_insert,
+  })
+  local function flush()
+    flush_in_place(session)
+  end
+  -- InsertLeave は i_CTRL-O でも起きる。CTRL-O のあとは挿入モードに戻るので見出しを残し、
+  -- 戻ったときにカーソルが動いていれば CursorMovedI で確定する
+  vim.api.nvim_create_autocmd('InsertLeave', {
+    group = group,
+    callback = function()
+      if not vim.api.nvim_get_mode().mode:match('^ni') then
+        flush()
+      end
+    end,
   })
   -- 挿入モードのまま別のウィンドウへ移ったときは InsertLeave が起きない
-  vim.api.nvim_create_autocmd({ 'InsertLeave', 'WinLeave', 'BufLeave' }, {
+  vim.api.nvim_create_autocmd({ 'WinLeave', 'BufLeave' }, {
     group = group,
-    callback = flush_in_place,
+    callback = flush,
   })
   vim.api.nvim_create_autocmd('CursorMovedI', {
     group = group,
-    callback = flush_if_cursor_left_preedit,
+    callback = function()
+      flush_if_cursor_left_preedit(session)
+    end,
   })
-  state.enabled = true
-  follow_mode(res)
-  sync()
 end
 
-function M.disable()
-  if not state.enabled then
+function insert.detach(session)
+  vim.api.nvim_del_augroup_by_name('rinze')
+  if session.blink then
+    session.blink.detach()
+    session.blink = nil
+  end
+end
+
+local function enable(session, hooks)
+  if session.enabled then
     return
   end
-  flush_in_place()
-  state.enabled = false
-  sync()
-  vim.api.nvim_del_augroup_by_name('rinze')
-  if state.blink then
-    state.blink.detach()
-    state.blink = nil
+  local res = request(session, 'reset')
+  session.surface.attach(session, hooks)
+  session.enabled = true
+  follow_mode(session, res)
+  sync(session)
+end
+
+local function disable(session)
+  if not session.enabled then
+    return
   end
-  state.mode = nil
+  flush_in_place(session)
+  session.enabled = false
+  sync(session)
+  session.surface.detach(session)
+  close_float(session)
+  session.preedit = ''
+  session.mode = nil
   vim.cmd.redrawstatus()
 end
 
+local cmdline_hooks = {
+  leave = function()
+    local session = sessions.c
+    disconnect(session)
+    disable(session)
+  end,
+  moved = function()
+    flush_if_cursor_left_preedit(sessions.c)
+  end,
+}
+
+local function in_cmdline()
+  return vim.api.nvim_get_mode().mode == 'c'
+end
+
+-- コマンドラインでは、そのコマンドラインの間だけ有効にする。挿入モードの状態とは別の接続で、別の入力状態を持つ
+function M.enable()
+  if in_cmdline() then
+    enable(sessions.c, cmdline_hooks)
+  else
+    enable(sessions.i)
+  end
+end
+
+function M.disable()
+  disable(in_cmdline() and sessions.c or sessions.i)
+end
+
 function M.toggle()
-  if state.enabled then
+  local session = in_cmdline() and sessions.c or sessions.i
+  if session.enabled then
     M.disable()
   else
     M.enable()
   end
 end
 
+-- コマンドラインで有効な間はコマンドラインの状態を、それ以外は挿入モードの状態を返す
+local function current()
+  if in_cmdline() and sessions.c.enabled then
+    return sessions.c
+  end
+  return sessions.i
+end
+
 function M.preedit()
-  return state.preedit
+  return current().preedit
 end
 
 -- 有効な間は `hiragana` `katakana` `halfwidth-katakana` `ascii` `fullwidth-latin` のどれか、無効なら nil
 function M.mode()
-  return state.mode
+  return current().mode
 end
 
 -- ステータスラインに出す文字列。無効なら空
 function M.status()
-  return state.mode and config.mode_labels[state.mode] or ''
+  local mode = current().mode
+  return mode and config.mode_labels[mode] or ''
 end
 
 return M

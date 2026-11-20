@@ -9,3 +9,4 @@ trap 'pkill -f -- "--socket $socket" || true; rm -rf "$work"' EXIT
 
 nvim --headless --clean -l "$root/tests/nvim/e2e.lua" "$rinzed" "$RINZE_MODEL" "$RINZE_DICT" "$socket" "$work/user.jisyo" "$work/history.tsv"
 nvim --headless --clean -l "$root/tests/nvim/keymap.lua" "$rinzed" "$RINZE_MODEL" "$RINZE_DICT" "$socket" "$work/user.jisyo" "$work/history.tsv"
+nvim --headless --clean -l "$root/tests/nvim/cmdline.lua" "$rinzed" "$RINZE_MODEL" "$RINZE_DICT" "$socket" "$work/user.jisyo" "$work/history.tsv"
