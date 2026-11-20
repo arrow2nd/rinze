@@ -1,0 +1,7 @@
+{
+  global:
+    fcitx_addon_factory_instance_rinze;
+    rinze_*;
+  local:
+    *;
+};

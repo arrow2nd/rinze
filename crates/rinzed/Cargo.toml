@@ -7,6 +7,7 @@ edition.workspace = true
 rinze-engine.workspace = true
 rinze-dict.workspace = true
 rinze-zenz.workspace = true
+rinze-socket.workspace = true
 rmpv.workspace = true
 
 [dev-dependencies]

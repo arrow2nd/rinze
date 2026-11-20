@@ -175,6 +175,10 @@ impl<C: Converter> Editor<C> {
         self.session.reset(&mut self.table)
     }
 
+    fn discard(&mut self) -> Response {
+        self.session.discard()
+    }
+
     fn choose(&mut self, version: u64, word: &str) -> &Response {
         let res = self
             .session
@@ -950,6 +954,79 @@ fn flush_はモードを保ち_reset_はひらがなに戻す() {
 }
 
 #[test]
+fn discard_は入力途中を確定せずに捨て_モードを保つ() {
+    let entries: &[(&str, &[&str])] = &[("あした", &["明日", "朝"]), ("かんじ", KANJI)];
+    let cases: &[(&str, &str, Mode)] = &[
+        ("ローマ字の途中", "k", Mode::Hiragana),
+        ("見出しの入力中", "Asit", Mode::Hiragana),
+        ("送りがなの入力中", "AsiT", Mode::Hiragana),
+        ("abbrev", "/fil", Mode::Hiragana),
+        ("候補を送った変換中", "Asita<Space><Space>", Mode::Hiragana),
+        (
+            "一覧の表示中",
+            "Kanji<Space><Space><Space><Space><Space>",
+            Mode::Hiragana,
+        ),
+        ("消すかの問い", "Asita<Space>Xye", Mode::Hiragana),
+        ("辞書登録", "Rinze<Space>凛", Mode::Hiragana),
+        (
+            "入れ子の辞書登録",
+            "Rinze<Space>Mayo<Space>ma",
+            Mode::Hiragana,
+        ),
+        (
+            "辞書登録の入力欄だけカタカナ",
+            "Rinze<Space>qa",
+            Mode::Hiragana,
+        ),
+        ("カタカナモードの変換中", "qAsita<Space>", Mode::Katakana),
+        (
+            "半角カナモードの見出し",
+            "<C-q>Asi",
+            Mode::HalfwidthKatakana,
+        ),
+        ("全角英字モード", "L", Mode::FullwidthLatin),
+        ("ASCII モード", "l", Mode::Ascii),
+    ];
+    let mut failures = Vec::new();
+    for (path, keys, mode) in cases {
+        let mut ed = Editor::new(Table::new(entries));
+        ed.type_keys(keys);
+        let res = ed.discard();
+        let got = (
+            res.commit.as_str(),
+            res.preedit.as_str(),
+            res.candidates.is_none(),
+            res.minibuffer.is_none(),
+            res.mode,
+        );
+        if got != ("", "", true, true, *mode) {
+            failures.push(format!("{path}: {got:?}"));
+        }
+        if !ed.table.committed.is_empty() || !ed.table.registered.is_empty() {
+            failures.push(format!(
+                "{path}: 確定か登録を知らせた {:?} {:?}",
+                ed.table.committed, ed.table.registered
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+#[test]
+fn discard_のあとは捨てた入力に続けず新しく打てる() {
+    let mut ed = Editor::new(Table::new(&[("あした", &["明日", "朝"])]));
+    ed.type_keys("qAsita<Space><Space>");
+    ed.discard();
+    ed.type_keys("Asita<Space><CR>ka");
+    assert_eq!(ed.buffer, "明日カ");
+    assert_eq!(
+        ed.table.committed,
+        [("あした".into(), "明日".into(), Pick::First)]
+    );
+}
+
+#[test]
 fn ローマ字の表は_ddskk_の既定に揃える() {
     for (keys, want) in [
         ("cyacyucyo", "ちゃちゅちょ"),
@@ -1293,6 +1370,7 @@ enum Then {
     Nothing,
     Flush,
     Reset,
+    Discard,
 }
 
 type Notified = (&'static str, &'static str, Pick);
@@ -1430,6 +1508,18 @@ fn 候補を確定するどの経路でも確定を_1_回知らせる() {
             &[],
         ),
         ("登録中の flush", "Rinze<Space>", Then::Flush, &[]),
+        (
+            "送った候補の discard",
+            "Asita<Space><Space>",
+            Then::Discard,
+            &[],
+        ),
+        (
+            "登録の入力欄で変換中の discard",
+            "Rinze<Space>Asita<Space>",
+            Then::Discard,
+            &[],
+        ),
     ];
     let mut failures = Vec::new();
     for (path, keys, then, expected) in cases {
@@ -1442,6 +1532,9 @@ fn 候補を確定するどの経路でも確定を_1_回知らせる() {
             }
             Then::Reset => {
                 ed.reset();
+            }
+            Then::Discard => {
+                ed.discard();
             }
         }
         let expected: Vec<(String, String, Pick)> = expected

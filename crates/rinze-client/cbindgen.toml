@@ -1,0 +1,14 @@
+language = "C"
+include_guard = "RINZE_CLIENT_H"
+autogen_warning = "/* cbindgen で src/ffi.rs から作る。手で書き換えず、RINZE_WRITE_HEADER=1 cargo test -p rinze-client header で作り直す */"
+cpp_compat = true
+documentation_style = "c99"
+style = "type"
+usize_is_size_t = true
+
+[export]
+include = ["RinzeMode", "RinzeStatus", "RinzeFailure", "RinzeLeftContext"]
+
+[enum]
+rename_variants = "ScreamingSnakeCase"
+prefix_with_name = true

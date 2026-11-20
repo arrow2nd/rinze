@@ -1,0 +1,7 @@
+[InputMethod]
+Name=rinze
+Icon=input-keyboard
+LangCode=ja
+Addon=rinze
+Label=り
+Configurable=False

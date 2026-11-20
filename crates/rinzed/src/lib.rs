@@ -4,6 +4,7 @@
 //! - `key(key: string, left_context: string) -> response`
 //!   `key` は 1 文字か `space` `enter` `backspace` `ctrl-g` `ctrl-j` `ctrl-q`。
 //! - `flush() -> response` 入力途中のものを表示どおりに確定する。モードは変えない。
+//! - `discard() -> response` 入力途中のものを確定せずに捨てる。学習にも記録しない。モードは変えない。
 //! - `reset() -> response` `flush` したうえで、モードをひらがなに戻す。
 //! - `choose(version: int, word: string, left_context: string) -> response` 見出しの入力中に、その読みの候補 `word` で確定する。
 //!   `version` が最後の応答の版と違うか、`word` が候補に無ければ何もせず `handled` を false で返す。
@@ -421,6 +422,7 @@ fn dispatch(
             session.handle(key, left.as_str().unwrap_or(""), converter)
         }
         "flush" => session.flush(converter),
+        "discard" => session.discard(),
         "reset" => session.reset(converter),
         "choose" => {
             let [version, word, left] = params else {

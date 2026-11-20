@@ -5,7 +5,7 @@ SKK 方式の IME。打ち方は SKK と同じで、変換候補の順位を「�
 選び直した候補は覚えて小さく加点するが、文脈がはっきり決める候補は入れ替えない ([学習](#学習))。
 辞書の候補を送り切ると zenz が生成した表記を出し、それも送り切ると SKK と同じ辞書登録に入る。
 
-入力モードは SKK と同じく、ひらがな、カタカナ、半角カナ、全角英字、ASCII の 5 つがある。フロントエンドは今は Neovim だけがある。
+入力モードは SKK と同じく、ひらがな、カタカナ、半角カナ、全角英字、ASCII の 5 つがある。フロントエンドは [Neovim](#neovim) と Linux の [fcitx5](#fcitx5) がある。
 
 ## 入れ方
 
@@ -29,9 +29,10 @@ nix run /path/to/rinze#demo
 | `packages.<system>.rinze-zenz-model` | zenz-v3.2-small の GGUF ([モデルと辞書](#モデルと辞書)) |
 | `packages.<system>.rinze-dictionaries` | 既定の SKK 辞書を `share/skk` にまとめたもの |
 | `packages.<system>.rinze-nvim` | Neovim プラグイン (`vimUtils.buildVimPlugin`) |
+| `packages.<system>.fcitx5-rinze` | fcitx5 のアドオン ([fcitx5](#fcitx5))。Linux だけ |
 | `packages.<system>.demo`、`apps.<system>.demo` | 上の試用の入口 |
 | `overlays.default` | 上の `rinzed`、`rinzed-unwrapped`、`rinze-zenz-model`、`rinze-nvim` を pkgs に足す |
-| `checks.<system>` | rinzed とプラグインのビルド、既定のソケットのパスの一致 (Lua 側)、`setup` に何も渡さずに PATH の rinzed を起動して候補を引けること |
+| `checks.<system>` | rinzed とプラグインのビルド、既定のソケットのパスの一致 (Lua 側)、`setup` に何も渡さずに PATH の rinzed を起動して候補を引けること。Linux では fcitx5 のアドオンを testfrontend で打って確かめること ([fcitx5 のテスト](#fcitx5-のテスト)) |
 
 system は `x86_64-linux`、`aarch64-linux`、`aarch64-darwin`。バイナリキャッシュは無いので、rinzed は手元で llama.cpp ごとビルドする。
 
@@ -126,16 +127,19 @@ programs.nixvim = {
 | `rinze-dict` | SKK 辞書の読み込みと見出しの検索、SKK 辞書のテキストへの語の追加と削除 (`skk-ignore-dic-word` での除外を含む) |
 | `rinze-zenz` | zenz による候補の点数づけと、ビーム探索による表記の生成 |
 | `rinzed` | 常駐プロセス。システム辞書 (複数を合わせたもの)、ユーザー辞書、学習の履歴、zenz を 1 つずつ持ち、Unix ドメインソケットで msgpack-rpc を受ける。上の 3 つを繋ぐ唯一の場所で、ユーザー辞書と学習の履歴を書くのも rinzed だけ |
+| `rinze-socket` | 既定のソケットのパスの規則。rinzed と rinze-client が共有する |
+| `rinze-client` | rinzed のクライアント。接続、応答の解釈、rinzed の自動起動、先読み、左文脈から未確定文字列を除く処理を持ち、C ABI で fcitx5 のアドオンから使う ([fcitx5](#fcitx5)) |
 
-フロントエンドは接続ごとに独立した入力状態を持ち、入力モードもその一部として rinzed が持つ。フロントエンドはモードを判断せず、キーを送って応答を表示する。Neovim のプラグインは `nvim/` にある。
-入力状態を分けたい場所ごとに接続を分ける。Neovim のプラグインは、挿入モード、[コマンドライン](#コマンドライン)、blink.cmp の問い合わせにそれぞれ別の接続を使う。
+フロントエンドは接続ごとに独立した入力状態を持ち、入力モードもその一部として rinzed が持つ。フロントエンドはモードを判断せず、キーを送って応答を表示する。Neovim のプラグインは `nvim/`、fcitx5 のアドオンは `fcitx5/` にある。
+入力状態を分けたい場所ごとに接続を分ける。Neovim のプラグインは、挿入モード、[コマンドライン](#コマンドライン)、blink.cmp の問い合わせにそれぞれ別の接続を使う。fcitx5 のアドオンは、入力欄 (fcitx5 の入力コンテキスト) ごとの接続と、先読みの接続を使う。
 
 ### 通信
 
-msgpack-rpc の要求を 5 種類受け付ける。
+msgpack-rpc の要求を 6 種類受け付ける。
 
 - `key(key, left_context)`: `key` は 1 文字か `space` `enter` `backspace` `ctrl-g` `ctrl-j` `ctrl-q`。`left_context` はカーソルより前の文字列で、zenz にはその末尾 40 字を渡す。
 - `flush()`: 入力途中のものを表示どおりに確定し、状態を空にする。入力モードは変えない。
+- `discard()`: 入力途中のものを確定せずに捨て、状態を空にする。入力モードは変えず、辞書登録の入力欄にいれば外側のモードに戻る。何も確定しないので[学習](#学習)の履歴にも書かない。fcitx5 のアドオンが、入力欄からフォーカスが外れたときに使う。
 - `reset()`: `flush` したうえで、入力モードをひらがなに戻す。フロントエンドが入力を有効にしたときに使う。
 - `choose(version, word, left_context)`: 見出しの入力中 (▽) に、その読みの候補 `word` で見出しを確定する。Space で変換して `word` まで送って確定したのと同じに扱い、最初の候補だったかを[学習](#学習)に知らせる。`version` が最後の応答の `version` と違えば (そのあとにキーを処理していれば) 何もせず、`handled` を false で返す。`word` が見出しの候補に無いときも同じ。
 - `lookup(reading, left_context)`: 送りがなの無い読み `reading` の候補を、Space で変換したときと同じ順の文字列の配列で返す。入力状態に触れないので、キーを送る接続と別の接続で、キーの処理を待たせずに問い合わせられる。生成した表記は含めない。
@@ -155,7 +159,7 @@ msgpack-rpc の要求を 5 種類受け付ける。
 | `version` | 接続ごとに、要求を処理するたびに増える数。`choose` に渡す |
 
 辞書登録中も `preedit` は元の位置の未確定文字列 (`▼まよねーず`) で、入れ子の状態はすべて rinzed が持つ。
-接続を閉じると、rinzed はその接続の入力状態を確定せずに捨てる。入力途中のものは確定せず、学習の履歴にも書かない。入力途中を捨てたいフロントエンドは、`flush` を送らずに接続を閉じる。
+接続を閉じると、rinzed はその接続の入力状態を確定せずに捨てる。入力途中のものは確定せず、学習の履歴にも書かない。入力途中を捨てたいフロントエンドは、入力モードを残すなら `discard` を送り、入力モードも要らなければ `flush` を送らずに接続を閉じる。
 rinzed は最後に zenz でつけた点数を 1 組覚えていて、左文脈と読みと候補が同じ問いには点数をつけ直さない。`lookup` で並べた読みをそのまま Space で変換すると、並べ替えを待たない (下の [blink.cmp との連携](#blinkcmp-との連携))。
 
 ## 打ち方
@@ -244,7 +248,7 @@ zenz に幅 8 のビーム探索で表記を生成させ、次のものを捨て
 - 生成した表記を選んでも覚えない。辞書の候補ではないので、次の変換の候補に無く、加点する先が無い。
 - abbrev の候補は zenz で並べ替えないので、最後に選び直した候補を先頭に出し、ほかは辞書の順のまま出す。
 - 候補の表示中に `X` で辞書から消すと、その候補の履歴も消す。
-- 確定の経路 (次の文字、Enter、`C-j`、モードの切り替え、一覧からの選択、後退、`flush`、`reset`、辞書登録、見出しの入力中の `choose`) はどれも、エンジンの `Converter::committed` を 1 回呼ぶ。最初に出た候補だったかを `Pick` で渡し、覚えるかは rinzed が決める。経路ごとの通知は `cargo test -p rinze-engine` が確かめ、コーパスの全区間で区間ごとに 1 回ずつ通知することも確かめる。
+- 確定の経路 (次の文字、Enter、`C-j`、モードの切り替え、一覧からの選択、後退、`flush`、`reset`、辞書登録、見出しの入力中の `choose`) はどれも、エンジンの `Converter::committed` を 1 回呼ぶ。`discard` は何も確定しないので呼ばない。最初に出た候補だったかを `Pick` で渡し、覚えるかは rinzed が決める。経路ごとの通知は `cargo test -p rinze-engine` が確かめ、コーパスの全区間で区間ごとに 1 回ずつ通知することも確かめる。
 
 履歴は UTF-8 のテキストで、1 行に `見出し<TAB>候補<TAB>最後に選び直した時刻 (UNIX 時刻のミリ秒)` を書く。
 既定の場所は Linux で `$XDG_STATE_HOME/rinze/history.tsv` (無ければ `~/.local/state/rinze/history.tsv`)、macOS で `~/Library/Application Support/rinze/history.tsv` で、`rinzed --history` で変えられる。
@@ -307,11 +311,11 @@ NixOS / nix で `nix develop` に入ると、cargo、llama.cpp のビルドに�
 nix develop
 cargo test --workspace           # モデルの要らないテスト
 nix build                        # result/bin/rinzed (モデルと辞書の既定値を持つラッパー)
-nix flake check                  # rinzed とプラグインのビルド、既定のソケットのパスの一致 (Lua 側)、cmd を省いた起動 (tests/nvim/default_cmd.lua)
+nix flake check                  # rinzed とプラグインのビルド、既定のソケットのパスの一致 (Lua 側)、cmd を省いた起動 (tests/nvim/default_cmd.lua)、Linux では fcitx5 のアドオンのテスト
 ```
 
 rinzed と Neovim プラグインは既定のソケットのパスを別々に組み立てる。
-両者が同じパスを返すことは `crates/rinzed/tests/fixtures/default_socket.json` の表で確かめる。
+両者が同じパスを返すことは `crates/rinze-socket/tests/fixtures/default_socket.json` の表で確かめる。Rust 側の規則は `rinze-socket` の 1 か所にあり、rinzed と rinze-client が使う。
 Rust 側は `cargo test --workspace` (と `nix build`) に含まれ、Lua 側は次で走らせる。
 
 ```sh
@@ -526,3 +530,129 @@ require('blink.cmp').setup({
 blink.cmp が割り当てたキーは、ほかのバッファローカルの割り当てと違って rinze が奪わず、blink.cmp が先に受け取る。blink.cmp の `fallback` は挿入モードに入ったときに無かったバッファローカルの割り当ての代わりに global な割り当てを探すので、rinze はそのキーだけ挿入モードの間 global に置き、抜けるときに置く前の割り当てを戻す。
 
 blink.cmp は受け入れ (`C-y`) と選択 (`C-n`) を `vim.schedule` で後回しにするので、rinze はキーを処理する前に `vim.wait(0)` で後回しの処理を先に済ませ、受け入れの直後に間を空けずに打ったキーを受け入れのあとに処理する。仮に入れた候補を確かめて取り消すのに blink.cmp の内部の `blink.cmp.completion.list` (`preview_undo`、`get_selected_item`、`undo_preview`) を使っている。blink.cmp 1.10.2 で確かめ、`tests/nvim/blink.sh` が守る。
+
+## fcitx5
+
+Linux では fcitx5 の入力メソッドとして rinze を使える。アプリの入力欄で打つと、Neovim と同じ rinzed が変換し、左文脈も入力欄から取る。
+
+アドオン (`fcitx5/`) は C++ で書き、表示と fcitx5 とのやりとりだけを受け持つ。rinzed との通信、応答の解釈、rinzed の起動、先読み、左文脈から未確定文字列を除く処理は Rust の `rinze-client` にあり、アドオンはそれを静的にリンクして C ABI で呼ぶ。
+ヘッダ `crates/rinze-client/include/rinze_client.h` は cbindgen で `src/ffi.rs` から作り、`cargo test -p rinze-client` がずれを見つける。作り直すには `RINZE_WRITE_HEADER=1 cargo test -p rinze-client header` を走らせる。
+アドオンの共有ライブラリは、`rinze_` で始まる関数と fcitx5 のアドオンの入口だけを外に出す。Rust の std のシンボルは出さない。
+
+### NixOS で入れる
+
+flake の `fcitx5-rinze` を fcitx5 のアドオンに足す。アドオンは動かす fcitx5 と同じ版に対してビルドする必要があるので、`inputs.rinze.inputs.nixpkgs.follows` でシステムの nixpkgs に揃える。
+
+```nix
+# flake.nix の inputs
+rinze = {
+  url = "git+file:///path/to/rinze";
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+```
+
+```nix
+# NixOS のモジュール
+{ inputs, pkgs, ... }:
+{
+  i18n.inputMethod = {
+    enable = true;
+    type = "fcitx5";
+    fcitx5.addons = [ inputs.rinze.packages.${pkgs.stdenv.hostPlatform.system}.fcitx5-rinze ];
+  };
+}
+```
+
+アドオンは PATH の `rinzed` を起動するので、flake の `rinzed` を home-manager の `home.packages` などで入れる。fcitx5 を systemd の user unit で動かしていて、unit の PATH に `/etc/profiles/per-user/$USER/bin` が入っていれば、home-manager で入れた rinzed が見つかる。
+
+反映して fcitx5 を起動し直したら、fcitx5-configtool の入力メソッドの一覧 (または `~/.config/fcitx5/profile`) に rinze を足す。
+
+### fcitx5-skk と並べて使う
+
+fcitx5-skk と rinze は、同じグループにも別のグループにも置ける。
+
+- 同じグループに `keyboard-us`、`skk`、`rinze` を並べた場合、`TriggerKeys` (既定は `Control+space`) は直接入力と、最後に使った入力メソッドを切り替える。skk と rinze の切り替えには `EnumerateForwardKeys` を割り当てるか、トレイのメニューを使う。
+- グループを分けた場合 (`keyboard-us` と `skk` のグループ、`keyboard-us` と `rinze` のグループ)、`EnumerateGroupForwardKeys` (既定は `Super+space`) でグループを切り替える。
+
+### fcitx5 での打ち方
+
+[打ち方](#打ち方)は Neovim と同じで、fcitx5 では次のように振る舞う。
+
+- 打鍵ごとに rinzed の応答を待ってから処理する。rinzed が処理しなかったキー (未確定のものが無いときの Enter、BackSpace、Space など) は、確定した文字列を入れたあとでアプリに渡す。
+- ASCII モードの間は、`C-j` 以外のキーを rinzed に送らずにアプリに渡す。
+- Escape は、入力途中のものがあれば `C-g` と同じく 1 段戻し、無ければアプリに渡す。
+- rinzed が扱わないキー (矢印、Tab、Ctrl の付いたほかのキーなど) は、入力途中のものがあれば表示どおりに確定してからアプリに渡す。
+- 候補一覧の表示中は、`x` と Space に加えて、fcitx5 の全体の設定のページ送りのキー (`PrevPage` と `NextPage`。既定は Up と Down) でもページを送る。パネルの矢印と候補のクリックも使える。
+- 入力欄からフォーカスが外れたときと、アプリが入力欄をリセットしたときは、入力途中のものを確定せずに捨て、学習の履歴にも書かない。入力モードは残る。入力メソッドを切り替えたときは、表示どおりに確定する。
+- 未確定文字列はすべて fcitx5 の `DontCommit` にしてあるので、フォーカスが外れても fcitx5 は確定しない。Wayland の text-input-v3 ではアプリが残すかを決め、入れ子の sway では GTK4 と Firefox は捨て、Chrome は未確定文字列を `▼機会` のように印ごと本文に残した。
+
+### fcitx5 での表示
+
+- 未確定文字列は、アプリが対応していればアプリの中に、そうでなければパネルに出す。
+- 候補一覧、辞書登録の入力欄、辞書から消すかの問いはパネルに出す。候補一覧の上にページ (`[2/34]`) を出す。
+- 入力モードは入力メソッドのサブモードのラベル (`かな` `カナ` `ｶﾅ` `全英` `aA`) とステータスエリアの項目に出し、切り替えたときは fcitx5 の入力メソッドの情報として短く出す。
+- トレイのメニューからモードを選ぶと、入力途中のものを確定してから、切り替えのキー (`q` `C-q` `l` `L` `C-j`) を送ってそのモードにする。
+
+### rinzed の起動と応答の待ち
+
+アドオンは、入力欄で rinze が有効になったときと打鍵のときに rinzed に接続し、接続できなければ rinzed を `--socket` 付きで起動する。起動は待たない。
+rinzed がモデルを読み終えて待ち受けを始めるまでの打鍵はアプリにそのまま渡し、パネルに `rinze: rinzed を起動しています` を出す。待ち受けを始めると、打鍵が無くても表示を消す。
+起動に失敗したとき (PATH に rinzed が無い、モデルが無いなど) は、理由 (`rinzed が PATH に無い`、rinzed が標準エラー出力に書いた最後の数行) をパネルに出し、打鍵はアプリに渡す。5 秒たつと、次の打鍵で起動し直す。
+rinzed の応答を 1 秒待っても来なければ、接続を捨てて打鍵をアプリに渡し、次の打鍵で接続し直す。rinzed 側の入力途中のものはそのとき失われる。
+Neovim と同じ既定のソケットを使うので、どちらが起動しても rinzed は 1 つで、ユーザー辞書と学習の履歴を共有する。
+
+接続は入力欄 (fcitx5 の入力コンテキスト) ごとに 1 つで、入力欄が無くなると閉じる。fcitx5 の「入力状態を共有」(`ShareInputState`) の設定によらず、入力モードは入力欄ごとに持つ。
+
+### 先読み
+
+見出しの読みが変わるたびに、キーを送る接続とは別の接続で `lookup` を投げる ([blink.cmp との連携](#blinkcmp-との連携)と同じ仕組み)。応答は使わない。
+rinzed は最後につけた点数を覚えているので、読みを打ってから点数づけが終わるのを待って Space を打つと、並べ替えを待たない。`こう` (候補 241 件) を打って 500 ms 後の Space は、先読みありで中央値 0.76 ms、なしで 160 ms だった。打った直後の Space は点数づけの途中なので、どちらも 155 ms だった。読みが変わる打鍵の中央値は 0.03 ms で、先読みを待たない (testfrontend でそれぞれ 5 回と 30 回、16 コアの x86_64)。
+
+### 左文脈
+
+アドオンは入力欄の surrounding text のカーソルより前を左文脈として送る。取れない入力欄では空の左文脈を送るので、候補は文脈の無い順に並ぶ。
+Firefox は未確定文字列を本文に入れた surrounding text を送り、本文が変わるまで同じものを送り続ける。アドオンは、前に surrounding text が変わってから表示した未確定文字列と突き合わせて、それを除く。未確定文字列の全体がカーソルをまたぐ位置にそのまま入っているときだけ除くので、本文に書いた ▽ や ▼ は除かない。
+
+| アプリ | 左文脈 | 確かめ方 |
+| --- | --- | --- |
+| GTK4 (zenity 4.2.2) | 取れる | 入れ子の sway で打った |
+| GTK3 (yad 15.0) | 取れる | 入れ子の sway で打った |
+| Google Chrome 157 | 取れる | 入れ子の sway で打った |
+| Firefox 159 | 取れる。未確定文字列を除いて使う | 入れ子の sway で打った |
+| Electron 45 | 既定のフラグでは取れない (`invalid`)。`--wayland-text-input-version=3` を付けると取れる | 入れ子の sway で打った |
+| Qt6 (kdialog) | 取れない | 入れ子の sway で打った |
+| Ghostty | 取れない | 確かめていない (ソースを読んだだけ) |
+| XIM のアプリ | 取れない | 確かめていない (ソースを読んだだけ) |
+
+### 診断
+
+環境変数 `RINZE_FCITX_DEBUG` を立てて fcitx5 を動かすと、打鍵ごとに、左文脈の取り方 (`surrounding`、`未確定文字列を除いた`、`invalid`、`capability なし`) と送った左文脈をパネルの下段とログに出す。ログには surrounding text とカーソルの位置もそのまま出す。アプリごとに左文脈が取れるかを確かめるのに使う。
+立てていない間は、打鍵の内容をログに出さない。
+
+```sh
+RINZE_FCITX_DEBUG=1 fcitx5 -r --verbose=rinze=5
+```
+
+| 環境変数 | 意味 |
+| --- | --- |
+| `RINZE_SOCKET` | 接続するソケット。無ければ既定のソケット |
+| `RINZE_RINZED` | 接続できなかったときに起動する rinzed。無ければ PATH の `rinzed` |
+| `RINZE_FCITX_DEBUG` | 上の診断を出す |
+| `RINZE_FCITX_NO_PREFETCH` | 先読みをやめる。先読みの効果を測るのに使う |
+
+### fcitx5 のテスト
+
+```sh
+nix build .#checks.x86_64-linux.fcitx5-rinze -L
+```
+
+fcitx5 の testfrontend でアドオンを画面なしで読み込み、打鍵を送って、確定した文字列、未確定文字列、パネル、入力モードの表示を確かめる (`fcitx5/test/testrinze.cpp`)。
+`fcitx5/test/run.sh` が場面ごとに一時ディレクトリのソケット、ユーザー辞書、学習の履歴で rinzed を用意し、利用者のファイルと既定のソケットには触れない。場面は次のとおりで、所要時間もログに出す。
+
+- 打鍵: 変換と確定、送りあり、左文脈による順位、未確定文字列の混ざった surrounding text、候補一覧の選択とページ送り、辞書登録の入力欄、辞書から消すかの問い、5 つの入力モードとトレイのメニュー、ASCII モードで rinzed に送らないこと、Ctrl のキー、Escape、矢印、BackSpace、フォーカスが外れたときに捨てて学習に書かないこと、入力欄を閉じると接続を閉じること
+- 自動起動: rinzed が動いていない状態で有効にしたとき、打鍵を待たせずにアプリへ渡し、待ち受けを始めると表示が戻ること
+- PATH に rinzed が無い場合、rinzed がモデルを読めずに終了する場合 (打鍵が無くても理由をパネルに出すこと)、応答しない rinzed (受け付けるだけのソケット) の場合
+- 先読みのあり、なしでの Space の所要時間
+
+あわせて、共有ライブラリが外に出すシンボルを確かめる (`fcitx5/test/exports.cmake`)。
+手元で cmake でビルドする場合は、`cargo build --release -p rinze-client` のあとで `nix develop .#fcitx5-rinze` に入り、`-DRINZE_CLIENT_LIB=target/release/librinze_client.a -DRINZE_CLIENT_INCLUDE=crates/rinze-client/include` を渡して `fcitx5/` をビルドし、ビルドディレクトリで `RINZED=<rinzed のパス> ctest --output-on-failure` を走らせる。

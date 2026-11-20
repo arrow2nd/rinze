@@ -2,7 +2,7 @@ local root = vim.fn.fnamemodify(debug.getinfo(1, 'S').source:sub(2), ':p:h:h:h')
 vim.opt.runtimepath:prepend(root .. '/nvim')
 
 local socket = require('rinze.socket')
-local table_path = root .. '/crates/rinzed/tests/fixtures/default_socket.json'
+local table_path = root .. '/crates/rinze-socket/tests/fixtures/default_socket.json'
 local cases = vim.json.decode(table.concat(vim.fn.readfile(table_path), '\n'), { luanil = { object = true } })
 
 local function normalize(path)

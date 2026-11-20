@@ -33,6 +33,8 @@
           paths = pkgs.rinzed.dictionaries;
         };
         demo = pkgs.callPackage ./nix/demo.nix { };
+      } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+        fcitx5-rinze = pkgs.callPackage ./nix/fcitx5.nix { };
       });
 
       apps = forAll (pkgs: {
@@ -43,7 +45,9 @@
         };
       });
 
-      checks = forAll (pkgs: {
+      checks = forAll (pkgs: pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+        fcitx5-rinze = (pkgs.callPackage ./nix/fcitx5.nix { }).overrideAttrs { doCheck = true; };
+      } // {
         inherit (pkgs) rinzed rinze-nvim;
         default-socket =
           pkgs.runCommand "rinze-default-socket"
@@ -54,7 +58,7 @@
                 fileset = pkgs.lib.fileset.unions [
                   ./nvim
                   ./tests/nvim/default_socket.lua
-                  ./crates/rinzed/tests/fixtures/default_socket.json
+                  ./crates/rinze-socket/tests/fixtures/default_socket.json
                 ];
               };
             }

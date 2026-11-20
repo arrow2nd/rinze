@@ -90,7 +90,7 @@ fn parse_args(
             .or_else(|| env(DEFAULT_MODEL_ENV).map(PathBuf::from))
             .ok_or_else(|| format!("--model が必要 ({DEFAULT_MODEL_ENV} も無い)"))?,
         dicts,
-        socket: socket.map_or_else(default_socket, Ok)?,
+        socket: socket.map_or_else(rinze_socket::default_socket, Ok)?,
         user_dict: user_dict.map_or_else(default_user_dict, Ok)?,
         learning: match (no_learning, history) {
             (true, Some(_)) => return Err("--no-learning と --history は同時に指定できない".into()),
@@ -110,39 +110,6 @@ fn default_threads() -> i32 {
 fn home(home: Option<OsString>) -> Result<PathBuf, String> {
     home.map(PathBuf::from)
         .ok_or_else(|| "HOME が無いので既定のパスを決められない".into())
-}
-
-#[derive(Clone, Copy)]
-enum Os {
-    MacOs,
-    Other,
-}
-
-const CURRENT_OS: Os = if cfg!(target_os = "macos") {
-    Os::MacOs
-} else {
-    Os::Other
-};
-
-fn default_socket() -> Result<PathBuf, String> {
-    socket_path(CURRENT_OS, |name| std::env::var_os(name))
-}
-
-/// macOS の `$TMPDIR` は nix develop などで変わり、同じ利用者のプロセスどうしで一致しないことがあるので使わない。
-fn socket_path(os: Os, env: impl Fn(&str) -> Option<OsString>) -> Result<PathBuf, String> {
-    let env = |name: &str| env(name).filter(|value| !value.is_empty());
-    if let Os::MacOs = os {
-        return Ok(home(env("HOME"))?.join("Library/Caches/rinze/rinze.sock"));
-    }
-    Ok(match env("XDG_RUNTIME_DIR") {
-        Some(dir) => PathBuf::from(dir).join("rinze.sock"),
-        None => {
-            let mut path = OsString::from("/tmp/rinze-");
-            path.push(env("USER").unwrap_or_default());
-            path.push(".sock");
-            PathBuf::from(path)
-        }
-    })
 }
 
 fn default_user_dict() -> Result<PathBuf, String> {
@@ -295,11 +262,10 @@ fn serve_on(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::ffi::OsString;
     use std::path::PathBuf;
 
-    use super::{Args, LearningArg, Os, parse_args, socket_path};
+    use super::{Args, LearningArg, parse_args};
 
     fn parse(args: &[&str], env: &[(&str, &str)]) -> Result<Args, String> {
         let fixed = ["--socket", "/s", "--user-dict", "/u", "--no-learning"];
@@ -347,32 +313,5 @@ mod tests {
     fn モデルか辞書が引数にも環境変数にも無ければ起動しない() {
         assert!(parse(&["--dict", "/L"], &[]).is_err());
         assert!(parse(&["--model", "/m.gguf"], &[("RINZED_DEFAULT_DICTS", "")]).is_err());
-    }
-
-    #[derive(serde::Deserialize)]
-    struct Case {
-        name: String,
-        os: String,
-        env: HashMap<String, String>,
-        socket: Option<PathBuf>,
-    }
-
-    #[test]
-    fn default_socket_matches_shared_table() {
-        let cases: Vec<Case> =
-            serde_json::from_str(include_str!("../tests/fixtures/default_socket.json")).unwrap();
-        let mut failures = Vec::new();
-        for case in &cases {
-            let os = match case.os.as_str() {
-                "macos" => Os::MacOs,
-                "linux" => Os::Other,
-                other => panic!("{}: 未知の os {other}", case.name),
-            };
-            let got = socket_path(os, |name| case.env.get(name).map(OsString::from)).ok();
-            if got != case.socket {
-                failures.push(format!("{}: {got:?} (期待 {:?})", case.name, case.socket));
-            }
-        }
-        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }

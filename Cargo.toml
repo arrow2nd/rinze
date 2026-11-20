@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/rinze-engine", "crates/rinze-dict", "crates/rinze-zenz", "crates/rinzed"]
+members = ["crates/rinze-engine", "crates/rinze-dict", "crates/rinze-zenz", "crates/rinzed", "crates/rinze-socket", "crates/rinze-client"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,6 +10,7 @@ edition = "2024"
 rinze-engine = { path = "crates/rinze-engine" }
 rinze-dict = { path = "crates/rinze-dict" }
 rinze-zenz = { path = "crates/rinze-zenz" }
+rinze-socket = { path = "crates/rinze-socket" }
 # 点数は llama.cpp の版で 0.1〜1 nat 動くので、版を固定する
 llama-cpp-2 = { version = "=0.1.161", default-features = false }
 encoding_rs = "0.8"

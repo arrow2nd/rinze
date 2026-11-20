@@ -359,6 +359,16 @@ impl Session {
         self.response(true, commit)
     }
 
+    /// 入力途中のものを確定せずに捨て、状態を空にする。モードは変えず、辞書登録中なら外側のモードに戻る。
+    /// 何も確定しないので [`Converter`] を呼ばない。フロントエンドが入力先からフォーカスを失ったときに使う。
+    pub fn discard(&mut self) -> Response {
+        self.version += 1;
+        if let Input::Kana(kana) = &mut self.input {
+            kana.phase = Phase::default();
+        }
+        self.response(true, String::new())
+    }
+
     /// [`Session::flush`] したうえで、モードを始めのひらがなに戻す。フロントエンドが入力を有効にしたときに使う。
     pub fn reset(&mut self, converter: &mut dyn Converter) -> Response {
         self.version += 1;
