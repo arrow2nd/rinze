@@ -246,7 +246,7 @@ local function release(session, index, find)
   end
 end
 
-local function sync(session)
+local function sync(session) -- luacheck: ignore 561
   local mode = session.surface.map_mode
   local buf = vim.api.nvim_get_current_buf()
   local active = session.enabled and session.surface.accepts_keys()

@@ -158,7 +158,7 @@ local function finish()
   os.exit(0)
 end
 
-local text, snaps
+local _, text, snaps
 if preset == 'enter-readme-override' then
   text, snaps = type_into('', 'Asita' .. wait_menu .. snap .. '<CR>' .. settle .. snap)
   check(
@@ -185,7 +185,7 @@ end
 
 for _, case in ipairs({ { '', 'Asita' }, { '今日は', 'Asita' }, { 'この', 'Kanji' } }) do
   local line, keys = unpack(case)
-  local _, snaps = type_into(line, keys .. wait_menu .. snap)
+  _, snaps = type_into(line, keys .. wait_menu .. snap)
   local menu = snaps[1].menu or {}
   print(string.format('左文脈 %q の %s でのメニュー: %s', line, keys, table.concat(menu, ' ')))
   check(
@@ -259,7 +259,7 @@ check(
   { text, snaps[1].menu },
   { 'あした', nil }
 )
-text, snaps = type_into('', 'Asita' .. wait_menu .. '<Space>' .. settle .. snap)
+_, snaps = type_into('', 'Asita' .. wait_menu .. '<Space>' .. settle .. snap)
 check(
   'default preset のメニュー表示中の Space は変換を始め、メニューを閉じる',
   { snaps[1].preedit, snaps[1].menu },
@@ -288,13 +288,13 @@ local function median(values)
 end
 
 key_ms = {}
-text, snaps = type_into('', 'Asitanoasa' .. snap)
+_, snaps = type_into('', 'Asitanoasa' .. snap)
 check(
   '一気に打っても打鍵の順序が入れ替わらない',
   { snaps[1].preedit, snaps[1].buffer },
   { '▽あしたのあさ', '' }
 )
-text, snaps = type_into('', 'Nihongonyuuryoku' .. snap .. wait_menu .. snap)
+_, snaps = type_into('', 'Nihongonyuuryoku' .. snap .. wait_menu .. snap)
 local burst_ms = (snaps[2].at - snaps[1].at) / 1e6
 check(
   '一気に打ったあとのメニューは最後の読みの候補',
@@ -336,7 +336,7 @@ local with_blink, space_after_menu = measure('連携あり', wait_menu)
 vim.cmd('RinzeDisable')
 rinze.setup({ cmd = cmd, socket = socket, blink = false })
 vim.cmd('RinzeEnable')
-local without_blink, space_without_menu = measure('連携なし', '<Cmd>lua T.wait(100)<CR>')
+local _, space_without_menu = measure('連携なし', '<Cmd>lua T.wait(100)<CR>')
 check(
   '連携ありでも 1 打鍵の処理は候補の問い合わせ (数 ms 以上) を待たない',
   with_blink < 2,

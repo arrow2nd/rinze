@@ -16,6 +16,17 @@
         nixpkgs.lib.genAttrs systems (
           system: f (nixpkgs.legacyPackages.${system}.extend self.overlays.default)
         );
+      lintTools = pkgs: {
+        lua = [
+          pkgs.stylua
+          pkgs.lua51Packages.luacheck
+        ];
+        rust = [
+          pkgs.rustfmt
+          pkgs.clippy
+          pkgs.cargo-shear
+        ];
+      };
     in
     {
       overlays.default = import ./nix/overlay.nix;
@@ -49,6 +60,42 @@
         fcitx5-rinze = (pkgs.callPackage ./nix/fcitx5.nix { }).overrideAttrs { doCheck = true; };
       } // {
         inherit (pkgs) rinzed rinze-nvim;
+        lint-lua =
+          pkgs.runCommand "rinze-lint-lua"
+            {
+              nativeBuildInputs = (lintTools pkgs).lua;
+              src = pkgs.lib.fileset.toSource {
+                root = ./.;
+                fileset = pkgs.lib.fileset.unions [
+                  ./.stylua.toml
+                  ./.luacheckrc
+                  ./nvim
+                  ./tests
+                  ./nix/demo.lua
+                ];
+              };
+            }
+            ''
+              bash $src/tests/lint.sh lua
+              touch $out
+            '';
+        lint-rust = pkgs.rinzed-unwrapped.overrideAttrs (old: {
+          pname = "rinze-lint-rust";
+          src = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./Cargo.toml
+              ./Cargo.lock
+              ./clippy.toml
+              ./crates
+              ./tests/lint.sh
+            ];
+          };
+          nativeBuildInputs = old.nativeBuildInputs ++ (lintTools pkgs).rust;
+          buildPhase = "bash tests/lint.sh rust";
+          doCheck = false;
+          installPhase = "touch $out";
+        });
         default-socket =
           pkgs.runCommand "rinze-default-socket"
             {
@@ -105,10 +152,10 @@
               pkgs.rustPlatform.bindgenHook
               pkgs.cargo
               pkgs.rustc
-              pkgs.rustfmt
-              pkgs.clippy
               pkgs.neovim
-            ];
+            ]
+            ++ (lintTools pkgs).lua
+            ++ (lintTools pkgs).rust;
             RINZE_BLINK = "${pkgs.vimPlugins.blink-cmp}";
           }
           // pkgs.lib.optionalAttrs (pkgs.rinzed-unwrapped ? RUSTFLAGS) {

@@ -2,7 +2,10 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-pub fn rewrite(path: &Path, edit: impl FnOnce(&str) -> io::Result<String>) -> io::Result<String> {
+pub(crate) fn rewrite(
+    path: &Path,
+    edit: impl FnOnce(&str) -> io::Result<String>,
+) -> io::Result<String> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
@@ -21,7 +24,7 @@ pub fn rewrite(path: &Path, edit: impl FnOnce(&str) -> io::Result<String>) -> io
     Ok(text)
 }
 
-pub fn read_or_empty(path: &Path) -> io::Result<String> {
+pub(crate) fn read_or_empty(path: &Path) -> io::Result<String> {
     match fs::read(path) {
         Ok(bytes) => Ok(rinze_dict::decode(&bytes).into_owned()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(String::new()),

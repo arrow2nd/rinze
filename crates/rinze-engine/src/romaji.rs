@@ -83,25 +83,25 @@ fn has_longer_rule(roman: &str) -> bool {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct Romaji {
+pub(crate) struct Romaji {
     pending: String,
 }
 
 impl Romaji {
-    pub fn pending(&self) -> &str {
+    pub(crate) fn pending(&self) -> &str {
         &self.pending
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.pending.is_empty()
     }
 
-    pub fn continues(&self, c: char) -> bool {
+    pub(crate) fn continues(&self, c: char) -> bool {
         let joined = format!("{}{c}", self.pending);
         has_longer_rule(&joined) || rule(&joined).is_some()
     }
 
-    pub fn feed(&mut self, c: char) -> String {
+    pub(crate) fn feed(&mut self, c: char) -> String {
         let joined = format!("{}{c}", self.pending);
         if has_longer_rule(&joined) {
             self.pending = joined;
@@ -119,17 +119,17 @@ impl Romaji {
         out
     }
 
-    pub fn flush(&mut self) -> &'static str {
+    pub(crate) fn flush(&mut self) -> &'static str {
         let output = rule(&self.pending).map_or("", |rule| rule.output);
         self.pending.clear();
         output
     }
 
-    pub fn backspace(&mut self) -> bool {
+    pub(crate) fn backspace(&mut self) -> bool {
         self.pending.pop().is_some()
     }
 
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.pending.clear();
     }
 }

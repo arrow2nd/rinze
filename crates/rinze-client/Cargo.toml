@@ -12,3 +12,6 @@ rmpv.workspace = true
 
 [dev-dependencies]
 cbindgen = { version = "0.29", default-features = false }
+
+[lints]
+workspace = true

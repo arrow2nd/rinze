@@ -32,7 +32,7 @@ nix run /path/to/rinze#demo
 | `packages.<system>.fcitx5-rinze` | fcitx5 のアドオン ([fcitx5](#fcitx5))。Linux だけ |
 | `packages.<system>.demo`、`apps.<system>.demo` | 上の試用の入口 |
 | `overlays.default` | 上の `rinzed`、`rinzed-unwrapped`、`rinze-zenz-model`、`rinze-nvim` を pkgs に足す |
-| `checks.<system>` | rinzed とプラグインのビルド、既定のソケットのパスの一致 (Lua 側)、`setup` に何も渡さずに PATH の rinzed を起動して候補を引けること。Linux では fcitx5 のアドオンを testfrontend で打って確かめること ([fcitx5 のテスト](#fcitx5-のテスト)) |
+| `checks.<system>` | rinzed とプラグインのビルド、Lua と Rust の[検査](#検査)、既定のソケットのパスの一致 (Lua 側)、`setup` に何も渡さずに PATH の rinzed を起動して候補を引けること。Linux では fcitx5 のアドオンを testfrontend で打って確かめること ([fcitx5 のテスト](#fcitx5-のテスト)) |
 
 system は `x86_64-linux`、`aarch64-linux`、`aarch64-darwin`。バイナリキャッシュは無いので、rinzed は手元で llama.cpp ごとビルドする。
 
@@ -305,13 +305,14 @@ tests/nvim/commit_timing.sh      # ROUNDS で回数を、HISTORY_LINES で行の
 
 ## 開発環境
 
-NixOS / nix で `nix develop` に入ると、cargo、llama.cpp のビルドに要る cmake と libclang、Neovim が揃い、blink.cmp のパスが `RINZE_BLINK` に入る。
+NixOS / nix で `nix develop` に入ると、cargo、llama.cpp のビルドに要る cmake と libclang、Neovim、[検査](#検査)の道具が揃い、blink.cmp のパスが `RINZE_BLINK` に入る。
 
 ```sh
 nix develop
 cargo test --workspace           # モデルの要らないテスト
+tests/lint.sh                    # フォーマット、リンタ、不要なコード、複雑性の検査 (lua か rust を渡すと片方だけ)
 nix build                        # result/bin/rinzed (モデルと辞書の既定値を持つラッパー)
-nix flake check                  # rinzed とプラグインのビルド、既定のソケットのパスの一致 (Lua 側)、cmd を省いた起動 (tests/nvim/default_cmd.lua)、Linux では fcitx5 のアドオンのテスト
+nix flake check                  # rinzed とプラグインのビルド、tests/lint.sh、既定のソケットのパスの一致 (Lua 側)、cmd を省いた起動 (tests/nvim/default_cmd.lua)、Linux では fcitx5 のアドオンのテスト
 ```
 
 rinzed と Neovim プラグインは既定のソケットのパスを別々に組み立てる。
@@ -323,6 +324,18 @@ nvim --headless --clean -l tests/nvim/default_socket.lua
 ```
 
 x86_64 では flake が `RUSTFLAGS` で AVX2 などを明示する。指定しないと ggml の SIMD が無効になり、変換が約 5 倍遅くなる。
+
+### 検査
+
+`tests/lint.sh` は次の道具を走らせ、`nix flake check` の `lint-lua` と `lint-rust` も同じものを走らせる。
+
+| 対象 | フォーマッタ | リンタと不要なコード | 複雑性 |
+| --- | --- | --- | --- |
+| Lua (`nvim`、`tests`、`nix/demo.lua`) | stylua (`.stylua.toml`) | luacheck (`.luacheckrc`)。未使用の変数、引数、値 | luacheck の循環的複雑度 (10 まで) |
+| Rust | rustfmt | clippy (`-D warnings`、lint の設定は `Cargo.toml` の `[workspace.lints]`)。`unreachable_pub` で外から見えない `pub` を `pub(crate)` にさせ、使われていなければ rustc の `dead_code` が見つける。使われていない依存クレートは cargo-shear | clippy の `cognitive_complexity` (15 まで)、`too_many_lines` (100 行まで)、`too_many_arguments` (7 個まで)。しきい値は `clippy.toml` |
+
+フォーマットを直すには `stylua nvim tests nix` と `cargo fmt` を走らせる。
+しきい値を超える既存の関数は、その関数に印を付けて許している。Lua は `-- luacheck: ignore 561`、Rust は `#[expect(clippy::…)]` で、`git grep -e 'luacheck: ignore' -e 'expect(clippy::'` で一覧できる。`#[expect]` は lint が出なくなると警告になるので、関数を分けたら印も外す。
 
 ### モデルと辞書
 

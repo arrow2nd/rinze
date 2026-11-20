@@ -76,6 +76,7 @@ check('開始時に常駐プロセスが動いていない', vim.uv.fs_stat(sock
 vim.cmd('RinzeEnable')
 check('RinzeEnable で常駐プロセスが起動する', vim.uv.fs_stat(socket) ~= nil, true)
 
+local _
 local text, snaps = type_in_new_buffer('Asita<Space>' .. snapshot .. 'AEmasuka')
 check('Asita<Space> の途中', snaps[1], { preedit = '▼明日', buffer = '' })
 check('Asita<Space>AEmasuka のバッファ', text, '明日会えますか')
@@ -105,13 +106,13 @@ local function in_history(prefix)
 end
 
 check('送って選んだ候補を学習の履歴に書く', in_history('あt\t合\t'), true)
-text, snaps = type_in_new_buffer('koredeATt' .. snapshot .. '<CR>')
+_, snaps = type_in_new_buffer('koredeATt' .. snapshot .. '<CR>')
 check('選び直した候補が同じ文脈で 1 位に出る', snaps[1].preedit, '▼合っt')
 
 for _ = 1, 3 do
   type_in_new_buffer('Asita<Space>AEmasu')
 end
-text, snaps = type_in_new_buffer('Mayone-zu<Space>woAE' .. snapshot .. 'masu')
+_, snaps = type_in_new_buffer('Mayone-zu<Space>woAE' .. snapshot .. 'masu')
 check(
   '明日会えを何度確定しても、マヨネーズをのあとは和えが 1 位',
   snaps[1].preedit,
@@ -119,7 +120,7 @@ check(
 )
 check('最初の候補をそのまま確定しても履歴に書かない', in_history('あe\t'), false)
 
-text, snaps =
+_, snaps =
   type_in_new_buffer('Kanji<Space><Space><Space><Space>' .. snapshot .. '<Space>' .. snapshot .. 'a' .. snapshot)
 print('一覧の表示: ' .. vim.inspect(snaps))
 check('4 回目の Space まではその場に出す', snaps[1].list, nil)
@@ -222,7 +223,7 @@ check(
 )
 check('ユーザー辞書に書く', vim.fn.readfile(user_dict)[4], 'りんぜ /' .. word .. '/')
 
-text, snaps = type_in_new_buffer('Rinze<Space>' .. snapshot)
+_, snaps = type_in_new_buffer('Rinze<Space>' .. snapshot)
 check('登録した語が次の変換で候補に出る', snaps[1].preedit, '▼' .. word)
 
 vim.fn.system({ 'pkill', '-f', '--socket ' .. socket })
@@ -230,13 +231,13 @@ vim.wait(5000, function()
   return vim.fn.system({ 'pgrep', '-f', '--socket ' .. socket }) == ''
 end, 50)
 check('止めた rinzed のソケットが残っている', vim.uv.fs_stat(socket) ~= nil, true)
-text, snaps = type_in_new_buffer('Rinze<Space>' .. snapshot)
+_, snaps = type_in_new_buffer('Rinze<Space>' .. snapshot)
 check(
   '残ったソケットを片付けて起動し直した rinzed でも登録した語が出る',
   snaps[1].preedit,
   '▼' .. word
 )
-text, snaps = type_in_new_buffer('koredeATt' .. snapshot .. '<CR>')
+_, snaps = type_in_new_buffer('koredeATt' .. snapshot .. '<CR>')
 check('rinzed を起動し直しても選び直した候補が 1 位に出る', snaps[1].preedit, '▼合っt')
 check('辞書登録した語も学習の履歴に書く', in_history('りんぜ\t' .. word .. '\t'), true)
 
@@ -268,7 +269,7 @@ local function sent_until_registration(keys)
   return table.concat(seen, '\n')
 end
 
-text, snaps = type_in_new_buffer('Asita<Space>' .. snapshot .. 'Xyes<CR>')
+_, snaps = type_in_new_buffer('Asita<Space>' .. snapshot .. 'Xyes<CR>')
 local purged = snaps[1].preedit:gsub('^▼', '')
 check(
   'システム辞書の語を X で消すと、ddskk と同じくユーザー辞書に skk-ignore-dic-word を書く',
@@ -295,7 +296,7 @@ check(
   vim.tbl_contains(vim.fn.readfile(user_dict), 'あした /' .. purged .. '/'),
   true
 )
-text, snaps = type_in_new_buffer('Asita<Space>' .. snapshot)
+_, snaps = type_in_new_buffer('Asita<Space>' .. snapshot)
 check('辞書登録し直した語は候補に出る', snaps[1].preedit, '▼' .. purged)
 
 local position_snapshot = '<F8>'
@@ -364,7 +365,7 @@ vim.keymap.set('i', screen_snapshot, function()
   table.insert(snapshots, vim.trim(table.concat(cells)))
 end)
 
-text, snaps = type_into({ '' }, 'ikore' .. suggest .. 'Asita' .. screen_snapshot .. '<Space>' .. screen_snapshot)
+_, snaps = type_into({ '' }, 'ikore' .. suggest .. 'Asita' .. screen_snapshot .. '<Space>' .. screen_snapshot)
 check(
   'カーソルの位置にほかのプラグインの overlay があっても見出しが見える',
   snaps[1],
@@ -376,14 +377,14 @@ check(
   'これ▼明日候補'
 )
 
-text, snaps = type_into({ '' }, 'ikoreAsita' .. suggest .. screen_snapshot)
+_, snaps = type_into({ '' }, 'ikoreAsita' .. suggest .. screen_snapshot)
 check(
   '見出しの表示中に置かれた overlay は見出しの後ろに出る',
   snaps[1],
   'これ▽あした候補'
 )
 
-text, snaps = type_into({ '駅で友達に' }, 'AATt' .. position_snapshot .. '<CR>')
+_, snaps = type_into({ '駅で友達に' }, 'AATt' .. position_snapshot .. '<CR>')
 check('別の文脈では選び直した候補に引っぱられない', snaps[1].preedit, '▼会っt')
 
 if failures > 0 then

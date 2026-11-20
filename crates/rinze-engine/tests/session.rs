@@ -1376,6 +1376,7 @@ enum Then {
 type Notified = (&'static str, &'static str, Pick);
 
 #[test]
+#[expect(clippy::too_many_lines)]
 fn 候補を確定するどの経路でも確定を_1_回知らせる() {
     use Pick::{First, Other};
     let entries: &[(&str, &[&str])] = &[

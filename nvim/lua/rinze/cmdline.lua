@@ -175,7 +175,7 @@ function M.follow_keys_taken(session, taken)
   end
 end
 
-function M.attach(session, hooks)
+function M.attach(_session, hooks)
   local group = vim.api.nvim_create_augroup('rinze-cmdline', { clear = true })
   -- 有効にしたコマンドラインを抜けたら、入力途中のものを捨てる。次にコマンドラインに入ったときは無効から始まる
   vim.api.nvim_create_autocmd('CmdlineLeave', {

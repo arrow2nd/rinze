@@ -1,7 +1,7 @@
 const HIRAGANA_TO_KATAKANA: u32 = 0x60;
 const FULLWIDTH_ASCII_OFFSET: u32 = 0xFEE0;
 
-pub fn katakana(hiragana: &str) -> String {
+pub(crate) fn katakana(hiragana: &str) -> String {
     hiragana.chars().map(katakana_char).collect()
 }
 
@@ -14,7 +14,7 @@ fn katakana_char(c: char) -> char {
     }
 }
 
-pub fn halfwidth_katakana(kana: &str) -> String {
+pub(crate) fn halfwidth_katakana(kana: &str) -> String {
     let mut out = String::new();
     for c in kana.chars().map(katakana_char) {
         match HALFWIDTH.iter().find(|(full, _)| *full == c) {
@@ -52,7 +52,7 @@ const HALFWIDTH: &[(char, &str)] = &[
 // ddskk の `skk-jisx0208-latin-vector` の既定値と同じ表。`"` `'` `-` `` ` `` `~` は ASCII の全角形ではない文字になる。
 const FULLWIDTH_LATIN: &str = "　！”＃＄％＆’（）＊＋，−．／０１２３４５６７８９：；＜＝＞？＠ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺ［＼］＾＿‘ａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ｛｜｝〜";
 
-pub fn fullwidth_latin(c: char) -> Option<char> {
+pub(crate) fn fullwidth_latin(c: char) -> Option<char> {
     let index = (c as u32).checked_sub(' ' as u32)?;
     FULLWIDTH_LATIN.chars().nth(index as usize)
 }

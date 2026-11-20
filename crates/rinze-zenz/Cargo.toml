@@ -9,3 +9,6 @@ llama-cpp-2.workspace = true
 # build.rs が libgomp をリンクするのは *-gnu ターゲットのときだけなので、OpenMP は Linux だけで有効にする
 [target.'cfg(target_os = "linux")'.dependencies]
 llama-cpp-2 = { workspace = true, features = ["openmp"] }
+
+[lints]
+workspace = true
