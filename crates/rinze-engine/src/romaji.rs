@@ -1,81 +1,87 @@
-// ddskk の `skk-rom-kana-base-rule-list` と `skk-rom-kana-rule-list` の既定値のうち、かなと記号を出す規則。
-// 各行は ddskk と同じく (入力, 次の状態, 出力)。関数を呼ぶ規則 (`q` `l` `/` など) は KanaKey で扱う。
-//
-// ddskk との違い:
-// - `va` などは ddskk の「う゛ぁ」ではなく「ゔぁ」、`xka` `xke` は ddskk のひらがなモードの「か」「け」ではなく「ゕ」「ゖ」を出す。
-//   カタカナモードではどちらも ddskk と同じ「ヴァ」「ヵ」「ヶ」になる。
-// - `@` (`skk-today`)、`$` (`skk-display-code-for-char-at-point`)、`\` (`skk-input-by-code-or-menu`) は持たず、そのまま入る。
+struct Rule {
+    input: &'static str,
+    output: &'static str,
+    pending: &'static str,
+}
+
+const fn emit(input: &'static str, output: &'static str) -> Rule {
+    emit_keep(input, output, "")
+}
+
+const fn emit_keep(input: &'static str, output: &'static str, pending: &'static str) -> Rule {
+    Rule {
+        input,
+        output,
+        pending,
+    }
+}
+
 #[rustfmt::skip]
-const RULES: &[(&str, &str, &str)] = &[
-    ("a", "", "あ"), ("i", "", "い"), ("u", "", "う"), ("e", "", "え"), ("o", "", "お"),
-    ("ka", "", "か"), ("ki", "", "き"), ("ku", "", "く"), ("ke", "", "け"), ("ko", "", "こ"),
-    ("sa", "", "さ"), ("si", "", "し"), ("su", "", "す"), ("se", "", "せ"), ("so", "", "そ"),
-    ("ta", "", "た"), ("ti", "", "ち"), ("tu", "", "つ"), ("te", "", "て"), ("to", "", "と"),
-    ("na", "", "な"), ("ni", "", "に"), ("nu", "", "ぬ"), ("ne", "", "ね"), ("no", "", "の"),
-    ("ha", "", "は"), ("hi", "", "ひ"), ("hu", "", "ふ"), ("he", "", "へ"), ("ho", "", "ほ"),
-    ("ma", "", "ま"), ("mi", "", "み"), ("mu", "", "む"), ("me", "", "め"), ("mo", "", "も"),
-    ("ya", "", "や"), ("yu", "", "ゆ"), ("ye", "", "いぇ"), ("yo", "", "よ"),
-    ("ra", "", "ら"), ("ri", "", "り"), ("ru", "", "る"), ("re", "", "れ"), ("ro", "", "ろ"),
-    ("wa", "", "わ"), ("wi", "", "うぃ"), ("wu", "", "う"), ("we", "", "うぇ"), ("wo", "", "を"),
-    ("ga", "", "が"), ("gi", "", "ぎ"), ("gu", "", "ぐ"), ("ge", "", "げ"), ("go", "", "ご"),
-    ("za", "", "ざ"), ("zi", "", "じ"), ("zu", "", "ず"), ("ze", "", "ぜ"), ("zo", "", "ぞ"),
-    ("da", "", "だ"), ("di", "", "ぢ"), ("du", "", "づ"), ("de", "", "で"), ("do", "", "ど"),
-    ("ba", "", "ば"), ("bi", "", "び"), ("bu", "", "ぶ"), ("be", "", "べ"), ("bo", "", "ぼ"),
-    ("pa", "", "ぱ"), ("pi", "", "ぴ"), ("pu", "", "ぷ"), ("pe", "", "ぺ"), ("po", "", "ぽ"),
-    ("kya", "", "きゃ"), ("kyi", "", "きぃ"), ("kyu", "", "きゅ"), ("kye", "", "きぇ"), ("kyo", "", "きょ"),
-    ("sya", "", "しゃ"), ("syi", "", "しぃ"), ("syu", "", "しゅ"), ("sye", "", "しぇ"), ("syo", "", "しょ"),
-    ("tya", "", "ちゃ"), ("tyi", "", "ちぃ"), ("tyu", "", "ちゅ"), ("tye", "", "ちぇ"), ("tyo", "", "ちょ"),
-    ("cya", "", "ちゃ"), ("cyi", "", "ちぃ"), ("cyu", "", "ちゅ"), ("cye", "", "ちぇ"), ("cyo", "", "ちょ"),
-    ("nya", "", "にゃ"), ("nyi", "", "にぃ"), ("nyu", "", "にゅ"), ("nye", "", "にぇ"), ("nyo", "", "にょ"),
-    ("hya", "", "ひゃ"), ("hyi", "", "ひぃ"), ("hyu", "", "ひゅ"), ("hye", "", "ひぇ"), ("hyo", "", "ひょ"),
-    ("fya", "", "ふゃ"), ("fyi", "", "ふぃ"), ("fyu", "", "ふゅ"), ("fye", "", "ふぇ"), ("fyo", "", "ふょ"),
-    ("mya", "", "みゃ"), ("myi", "", "みぃ"), ("myu", "", "みゅ"), ("mye", "", "みぇ"), ("myo", "", "みょ"),
-    ("rya", "", "りゃ"), ("ryi", "", "りぃ"), ("ryu", "", "りゅ"), ("rye", "", "りぇ"), ("ryo", "", "りょ"),
-    ("gya", "", "ぎゃ"), ("gyi", "", "ぎぃ"), ("gyu", "", "ぎゅ"), ("gye", "", "ぎぇ"), ("gyo", "", "ぎょ"),
-    ("zya", "", "じゃ"), ("zyi", "", "じぃ"), ("zyu", "", "じゅ"), ("zye", "", "じぇ"), ("zyo", "", "じょ"),
-    ("jya", "", "じゃ"), ("jyi", "", "じぃ"), ("jyu", "", "じゅ"), ("jye", "", "じぇ"), ("jyo", "", "じょ"),
-    ("dya", "", "ぢゃ"), ("dyi", "", "ぢぃ"), ("dyu", "", "ぢゅ"), ("dye", "", "ぢぇ"), ("dyo", "", "ぢょ"),
-    ("bya", "", "びゃ"), ("byi", "", "びぃ"), ("byu", "", "びゅ"), ("bye", "", "びぇ"), ("byo", "", "びょ"),
-    ("pya", "", "ぴゃ"), ("pyi", "", "ぴぃ"), ("pyu", "", "ぴゅ"), ("pye", "", "ぴぇ"), ("pyo", "", "ぴょ"),
-    ("sha", "", "しゃ"), ("shi", "", "し"), ("shu", "", "しゅ"), ("she", "", "しぇ"), ("sho", "", "しょ"),
-    ("cha", "", "ちゃ"), ("chi", "", "ち"), ("chu", "", "ちゅ"), ("che", "", "ちぇ"), ("cho", "", "ちょ"),
-    ("tsu", "", "つ"),
-    ("ja", "", "じゃ"), ("ji", "", "じ"), ("ju", "", "じゅ"), ("je", "", "じぇ"), ("jo", "", "じょ"),
-    ("fa", "", "ふぁ"), ("fi", "", "ふぃ"), ("fu", "", "ふ"), ("fe", "", "ふぇ"), ("fo", "", "ふぉ"),
-    ("va", "", "ゔぁ"), ("vi", "", "ゔぃ"), ("vu", "", "ゔ"), ("ve", "", "ゔぇ"), ("vo", "", "ゔぉ"),
-    ("tha", "", "てぁ"), ("thi", "", "てぃ"), ("thu", "", "てゅ"), ("the", "", "てぇ"), ("tho", "", "てょ"),
-    ("dha", "", "でゃ"), ("dhi", "", "でぃ"), ("dhu", "", "でゅ"), ("dhe", "", "でぇ"), ("dho", "", "でょ"),
-    ("xa", "", "ぁ"), ("xi", "", "ぃ"), ("xu", "", "ぅ"), ("xe", "", "ぇ"), ("xo", "", "ぉ"),
-    ("xya", "", "ゃ"), ("xyu", "", "ゅ"), ("xyo", "", "ょ"), ("xtu", "", "っ"), ("xtsu", "", "っ"),
-    ("xwa", "", "ゎ"), ("xwi", "", "ゐ"), ("xwe", "", "ゑ"), ("xka", "", "ゕ"), ("xke", "", "ゖ"),
-    ("n", "", "ん"), ("nn", "", "ん"), ("n'", "", "ん"), ("mm", "m", "ん"),
-    ("bb", "b", "っ"), ("cc", "c", "っ"), ("dd", "d", "っ"), ("ff", "f", "っ"), ("gg", "g", "っ"),
-    ("hh", "h", "っ"), ("jj", "j", "っ"), ("kk", "k", "っ"), ("pp", "p", "っ"), ("rr", "r", "っ"),
-    ("ss", "s", "っ"), ("tt", "t", "っ"), ("vv", "v", "っ"), ("ww", "w", "っ"), ("xx", "x", "っ"),
-    ("yy", "y", "っ"), ("zz", "z", "っ"),
-    ("-", "", "ー"), (",", "", "、"), (".", "", "。"), ("?", "", "？"), (":", "", "："), (";", "", "；"),
-    ("[", "", "「"), ("]", "", "」"),
-    ("z ", "", "　"), ("z*", "", "※"), ("z,", "", "‥"), ("z-", "", "〜"), ("z.", "", "…"), ("z/", "", "・"),
-    ("z0", "", "○"), ("z:", "", "゜"), ("z;", "", "゛"), ("z@", "", "◎"), ("z[", "", "『"), ("z]", "", "』"),
-    ("z{", "", "【"), ("z}", "", "】"), ("z(", "", "（"), ("z)", "", "）"),
-    ("zh", "", "←"), ("zj", "", "↓"), ("zk", "", "↑"), ("zl", "", "→"), ("zL", "", "⇒"), ("zn", "", "ー"),
+const RULES: &[Rule] = &[
+    emit("a", "あ"), emit("i", "い"), emit("u", "う"), emit("e", "え"), emit("o", "お"),
+    emit("ka", "か"), emit("ki", "き"), emit("ku", "く"), emit("ke", "け"), emit("ko", "こ"),
+    emit("sa", "さ"), emit("si", "し"), emit("su", "す"), emit("se", "せ"), emit("so", "そ"),
+    emit("ta", "た"), emit("ti", "ち"), emit("tu", "つ"), emit("te", "て"), emit("to", "と"),
+    emit("na", "な"), emit("ni", "に"), emit("nu", "ぬ"), emit("ne", "ね"), emit("no", "の"),
+    emit("ha", "は"), emit("hi", "ひ"), emit("hu", "ふ"), emit("he", "へ"), emit("ho", "ほ"),
+    emit("ma", "ま"), emit("mi", "み"), emit("mu", "む"), emit("me", "め"), emit("mo", "も"),
+    emit("ya", "や"), emit("yu", "ゆ"), emit("ye", "いぇ"), emit("yo", "よ"),
+    emit("ra", "ら"), emit("ri", "り"), emit("ru", "る"), emit("re", "れ"), emit("ro", "ろ"),
+    emit("wa", "わ"), emit("wi", "うぃ"), emit("wu", "う"), emit("we", "うぇ"), emit("wo", "を"),
+    emit("ga", "が"), emit("gi", "ぎ"), emit("gu", "ぐ"), emit("ge", "げ"), emit("go", "ご"),
+    emit("za", "ざ"), emit("zi", "じ"), emit("zu", "ず"), emit("ze", "ぜ"), emit("zo", "ぞ"),
+    emit("da", "だ"), emit("di", "ぢ"), emit("du", "づ"), emit("de", "で"), emit("do", "ど"),
+    emit("ba", "ば"), emit("bi", "び"), emit("bu", "ぶ"), emit("be", "べ"), emit("bo", "ぼ"),
+    emit("pa", "ぱ"), emit("pi", "ぴ"), emit("pu", "ぷ"), emit("pe", "ぺ"), emit("po", "ぽ"),
+    emit("kya", "きゃ"), emit("kyi", "きぃ"), emit("kyu", "きゅ"), emit("kye", "きぇ"), emit("kyo", "きょ"),
+    emit("sya", "しゃ"), emit("syi", "しぃ"), emit("syu", "しゅ"), emit("sye", "しぇ"), emit("syo", "しょ"),
+    emit("tya", "ちゃ"), emit("tyi", "ちぃ"), emit("tyu", "ちゅ"), emit("tye", "ちぇ"), emit("tyo", "ちょ"),
+    emit("cya", "ちゃ"), emit("cyi", "ちぃ"), emit("cyu", "ちゅ"), emit("cye", "ちぇ"), emit("cyo", "ちょ"),
+    emit("nya", "にゃ"), emit("nyi", "にぃ"), emit("nyu", "にゅ"), emit("nye", "にぇ"), emit("nyo", "にょ"),
+    emit("hya", "ひゃ"), emit("hyi", "ひぃ"), emit("hyu", "ひゅ"), emit("hye", "ひぇ"), emit("hyo", "ひょ"),
+    emit("fya", "ふゃ"), emit("fyi", "ふぃ"), emit("fyu", "ふゅ"), emit("fye", "ふぇ"), emit("fyo", "ふょ"),
+    emit("mya", "みゃ"), emit("myi", "みぃ"), emit("myu", "みゅ"), emit("mye", "みぇ"), emit("myo", "みょ"),
+    emit("rya", "りゃ"), emit("ryi", "りぃ"), emit("ryu", "りゅ"), emit("rye", "りぇ"), emit("ryo", "りょ"),
+    emit("gya", "ぎゃ"), emit("gyi", "ぎぃ"), emit("gyu", "ぎゅ"), emit("gye", "ぎぇ"), emit("gyo", "ぎょ"),
+    emit("zya", "じゃ"), emit("zyi", "じぃ"), emit("zyu", "じゅ"), emit("zye", "じぇ"), emit("zyo", "じょ"),
+    emit("jya", "じゃ"), emit("jyi", "じぃ"), emit("jyu", "じゅ"), emit("jye", "じぇ"), emit("jyo", "じょ"),
+    emit("dya", "ぢゃ"), emit("dyi", "ぢぃ"), emit("dyu", "ぢゅ"), emit("dye", "ぢぇ"), emit("dyo", "ぢょ"),
+    emit("bya", "びゃ"), emit("byi", "びぃ"), emit("byu", "びゅ"), emit("bye", "びぇ"), emit("byo", "びょ"),
+    emit("pya", "ぴゃ"), emit("pyi", "ぴぃ"), emit("pyu", "ぴゅ"), emit("pye", "ぴぇ"), emit("pyo", "ぴょ"),
+    emit("sha", "しゃ"), emit("shi", "し"), emit("shu", "しゅ"), emit("she", "しぇ"), emit("sho", "しょ"),
+    emit("cha", "ちゃ"), emit("chi", "ち"), emit("chu", "ちゅ"), emit("che", "ちぇ"), emit("cho", "ちょ"),
+    emit("tsu", "つ"),
+    emit("ja", "じゃ"), emit("ji", "じ"), emit("ju", "じゅ"), emit("je", "じぇ"), emit("jo", "じょ"),
+    emit("fa", "ふぁ"), emit("fi", "ふぃ"), emit("fu", "ふ"), emit("fe", "ふぇ"), emit("fo", "ふぉ"),
+    emit("va", "ゔぁ"), emit("vi", "ゔぃ"), emit("vu", "ゔ"), emit("ve", "ゔぇ"), emit("vo", "ゔぉ"),
+    emit("tha", "てぁ"), emit("thi", "てぃ"), emit("thu", "てゅ"), emit("the", "てぇ"), emit("tho", "てょ"),
+    emit("dha", "でゃ"), emit("dhi", "でぃ"), emit("dhu", "でゅ"), emit("dhe", "でぇ"), emit("dho", "でょ"),
+    emit("xa", "ぁ"), emit("xi", "ぃ"), emit("xu", "ぅ"), emit("xe", "ぇ"), emit("xo", "ぉ"),
+    emit("xya", "ゃ"), emit("xyu", "ゅ"), emit("xyo", "ょ"), emit("xtu", "っ"), emit("xtsu", "っ"),
+    emit("xwa", "ゎ"), emit("xwi", "ゐ"), emit("xwe", "ゑ"), emit("xka", "ゕ"), emit("xke", "ゖ"),
+    emit("n", "ん"), emit("nn", "ん"), emit("n'", "ん"), emit_keep("mm", "ん", "m"),
+    emit_keep("bb", "っ", "b"), emit_keep("cc", "っ", "c"), emit_keep("dd", "っ", "d"), emit_keep("ff", "っ", "f"), emit_keep("gg", "っ", "g"),
+    emit_keep("hh", "っ", "h"), emit_keep("jj", "っ", "j"), emit_keep("kk", "っ", "k"), emit_keep("pp", "っ", "p"), emit_keep("rr", "っ", "r"),
+    emit_keep("ss", "っ", "s"), emit_keep("tt", "っ", "t"), emit_keep("vv", "っ", "v"), emit_keep("ww", "っ", "w"), emit_keep("xx", "っ", "x"),
+    emit_keep("yy", "っ", "y"), emit_keep("zz", "っ", "z"),
+    emit("-", "ー"), emit(",", "、"), emit(".", "。"), emit("?", "？"), emit(":", "："), emit(";", "；"),
+    emit("[", "「"), emit("]", "」"),
+    emit("z ", "　"), emit("z*", "※"), emit("z,", "‥"), emit("z-", "〜"), emit("z.", "…"), emit("z/", "・"),
+    emit("z0", "○"), emit("z:", "゜"), emit("z;", "゛"), emit("z@", "◎"), emit("z[", "『"), emit("z]", "』"),
+    emit("z{", "【"), emit("z}", "】"), emit("z(", "（"), emit("z)", "）"),
+    emit("zh", "←"), emit("zj", "↓"), emit("zk", "↑"), emit("zl", "→"), emit("zL", "⇒"), emit("zn", "ー"),
 ];
 
-fn rule(roman: &str) -> Option<(&'static str, &'static str)> {
-    RULES
-        .iter()
-        .find(|(input, ..)| *input == roman)
-        .map(|&(_, next, output)| (next, output))
+fn rule(roman: &str) -> Option<&'static Rule> {
+    RULES.iter().find(|rule| rule.input == roman)
 }
 
 fn has_longer_rule(roman: &str) -> bool {
     RULES
         .iter()
-        .any(|(input, ..)| input.len() > roman.len() && input.starts_with(roman))
+        .any(|rule| rule.input.len() > roman.len() && rule.input.starts_with(roman))
 }
 
-// ddskk と同じく、より長い規則に続きうる間は出力を保留し、
-// 続かない文字が来たら保留中のものが規則ならその出力を出し、規則でなければ捨てる。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Romaji {
     pending: String,
@@ -101,9 +107,9 @@ impl Romaji {
             self.pending = joined;
             return String::new();
         }
-        if let Some((next, output)) = rule(&joined) {
-            self.pending = next.to_string();
-            return output.to_string();
+        if let Some(rule) = rule(&joined) {
+            self.pending = rule.pending.to_string();
+            return rule.output.to_string();
         }
         if self.pending.is_empty() {
             return c.to_string();
@@ -114,7 +120,7 @@ impl Romaji {
     }
 
     pub fn flush(&mut self) -> &'static str {
-        let output = rule(&self.pending).map_or("", |(_, output)| output);
+        let output = rule(&self.pending).map_or("", |rule| rule.output);
         self.pending.clear();
         output
     }

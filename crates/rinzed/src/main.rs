@@ -128,9 +128,6 @@ fn default_socket() -> Result<PathBuf, String> {
     socket_path(CURRENT_OS, |name| std::env::var_os(name))
 }
 
-/// Neovim プラグイン (`nvim/lua/rinze/socket.lua`) も同じ規則でパスを決める。
-/// 両者の一致は `tests/fixtures/default_socket.json` の表で確かめる。
-///
 /// macOS の `$TMPDIR` は nix develop などで変わり、同じ利用者のプロセスどうしで一致しないことがあるので使わない。
 fn socket_path(os: Os, env: impl Fn(&str) -> Option<OsString>) -> Result<PathBuf, String> {
     let env = |name: &str| env(name).filter(|value| !value.is_empty());
@@ -161,7 +158,6 @@ fn default_user_dict() -> Result<PathBuf, String> {
     Ok(data.join("rinze/user.jisyo"))
 }
 
-/// 履歴は消えても困らないが残したい状態なので、Linux では XDG の state に置く。macOS には state に当たる場所が無い。
 fn default_history() -> Result<PathBuf, String> {
     if cfg!(target_os = "macos") {
         return Ok(

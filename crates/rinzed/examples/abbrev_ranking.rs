@@ -1,6 +1,3 @@
-//! abbrev の候補を zenz で並べ替えるかを決めるための測定。
-//! 英字の見出しの候補を、辞書の順と、英字をそのまま読みとして zenz に渡した点数の順で並べ、期待する表記の順位を比べる。
-//!
 //! `RINZE_MODEL=... RINZE_DICT=... cargo run --release -p rinzed --example abbrev_ranking`
 
 use rinze_zenz::{Model, Zenz};

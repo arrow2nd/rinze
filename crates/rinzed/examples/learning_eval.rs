@@ -1,17 +1,3 @@
-//! 選んだ候補への加点 (学習) の形と大きさを決めるための測定。
-//!
-//! zenz の点数は左文脈と候補だけで決まり、履歴では変わらない。そこで各場面の点数を 1 度だけ計算し、
-//! 記録する確定、加点の形と大きさを変えながら、履歴を積んだあとの 1 位を数える。
-//!
-//! - 引っぱられない: 同じ見出しで文脈により答えが変わる組 (A, B) のうち、学習なしで B の文脈の 1 位が B の答えだったものについて、
-//!   A の文脈で A の答えを N 回確定したあとも B の答えが 1 位である割合。
-//!   「最悪」は、記録のしかたによらず A の答えの確定を毎回記録した場合 (A の答えを毎回送って選んだ場合に当たる)。
-//! - 覚える: 学習なしで 1 位が答えでなかった場面について、同じ文脈で答えを k 回確定したあと答えが 1 位になる割合。
-//!   「戻す」は、答えを 1 回確定してから学習なしの 1 位を 1 回確定したあと、学習なしの 1 位が 1 位に戻る割合。
-//!   「再び」は、そのあとさらに答えを 1 回確定したあと、答えが 1 位になる割合。
-//! - コーパス: `crates/rinze-engine/tests/fixtures/corpus.tsv` を履歴の空の状態から 2 周打ち、各区間で期待する表記を確定する。
-//!   1 周目 (学習しながら) と 2 周目の 1 位正解率を出す。`PASSES=2 tests/nvim/corpus.sh` の結果と区間ごとに一致する。
-//!
 //! 環境変数 `DETAIL=<形>:<大きさ>` (`latest:0.75`、rinzed の実装は `library:-` など) を与えると、送ったときだけ覚える設定で、
 //! 引っぱられた組、覚えられなかった場面、コーパスの 2 周目で 1 位が変わった区間を出す。`DETAIL_WITHOUT_CONTEXT` で左文脈が空のときの大きさを変える。
 //!
@@ -42,15 +28,19 @@ struct Case {
     answer: Vec<String>,
 }
 
-/// 1 つの変換の場面。`scores` は `words` と同じ順で、abbrev では無い。
 struct Scene {
     id: String,
     left: String,
     key: String,
     words: Vec<String>,
-    scores: Option<Vec<f64>>,
+    scores: Scores,
     generated_first: Option<String>,
     answer: Vec<String>,
+}
+
+enum Scores {
+    Kana(Vec<f64>),
+    Abbrev,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -80,12 +70,10 @@ enum Policy {
 struct Config {
     shape: Shape,
     magnitude: f64,
-    /// 左文脈が空のときの大きさ。無ければ `magnitude`。
     without_context: Option<f64>,
     policy: Policy,
 }
 
-/// 回数で飽和する形のために、rinzed の履歴 ([`Choice`]) に無い回数も数える。
 struct Seen {
     word: String,
     count: u32,
@@ -179,7 +167,10 @@ impl Scene {
         };
         let bonus = |word: &str| config.shape.bonus(magnitude, choices, word, &self.left);
         let zeros = vec![0.0; self.words.len()];
-        let scores = self.scores.as_ref().unwrap_or(&zeros);
+        let scores = match &self.scores {
+            Scores::Kana(scores) => scores,
+            Scores::Abbrev => &zeros,
+        };
         learning::rank(self.words.clone(), scores, bonus)
             .into_iter()
             .next()
@@ -252,15 +243,22 @@ fn learned(s: &Scene, times: usize, config: Config) -> bool {
     s.correct(&history, config)
 }
 
-/// 答えを覚えさせてから学習なしの 1 位に戻し、もう一度答えを選ぶ。戻したときと再び選んだときに、それぞれ 1 位が選んだものか。
-fn switched(s: &Scene, config: Config) -> (bool, bool) {
+struct Switched {
+    back_to_baseline: bool,
+    answer_again: bool,
+}
+
+fn switched(s: &Scene, config: Config) -> Switched {
     let mut history = History::default();
     let before = s.baseline_top();
     s.commit_answer(1, &mut history, config);
     s.commit(&before, &mut history, config);
-    let back = s.top(&history, config).as_ref() == Some(&before);
+    let back_to_baseline = s.top(&history, config).as_ref() == Some(&before);
     s.commit_answer(1, &mut history, config);
-    (back, s.correct(&history, config))
+    Switched {
+        back_to_baseline,
+        answer_again: s.correct(&history, config),
+    }
 }
 
 fn corpus_passes(sections: &[Scene], config: Config) -> [Rate; 2] {
@@ -285,13 +283,13 @@ impl Oracle<'_, '_> {
     fn scene(&self, query: &Query, expect: &str) -> Scene {
         let words = lookup(&self.backend.dict, &self.backend.user(), query.midashi);
         let scores = match query.midashi {
-            Midashi::Kana { .. } if words.len() >= 2 => Some(
+            Midashi::Kana { .. } if words.len() >= 2 => Scores::Kana(
                 self.backend
                     .score(query.left_context, query.midashi, &words)
                     .unwrap(),
             ),
-            Midashi::Kana { .. } => Some(vec![0.0; words.len()]),
-            Midashi::Abbrev(_) => None,
+            Midashi::Kana { .. } => Scores::Kana(vec![0.0; words.len()]),
+            Midashi::Abbrev(_) => Scores::Abbrev,
         };
         let generated_first = words
             .is_empty()
@@ -410,32 +408,45 @@ fn case_scene(backend: &Backend<'_>, case: &Case) -> Scene {
         left: case.left.clone(),
         key: midashi.key(),
         words,
-        scores: Some(scores),
+        scores: Scores::Kana(scores),
         generated_first: None,
         answer: case.answer.clone(),
     }
 }
 
-/// 答えの点数が最も良い候補からどれだけ低いか。答えが 1 位なら、2 位との差を負で返す。
-fn gap(scene: &Scene, word_against: Option<&str>) -> f64 {
-    let scores = scene.scores.as_ref().unwrap();
-    let score = |w: &str| scene.words.iter().position(|x| x == w).map(|i| scores[i]);
-    let answer = scene
+fn kana_scores(scene: &Scene) -> &[f64] {
+    match &scene.scores {
+        Scores::Kana(scores) => scores,
+        Scores::Abbrev => panic!("abbrev の場面に点数は無い: {}", scene.id),
+    }
+}
+
+fn score_of(scene: &Scene, word: &str) -> Option<f64> {
+    let i = scene.words.iter().position(|w| w == word)?;
+    Some(kana_scores(scene)[i])
+}
+
+fn best_answer_score(scene: &Scene) -> f64 {
+    scene
         .answer
         .iter()
-        .filter_map(|w| score(w))
+        .filter_map(|w| score_of(scene, w))
+        .fold(f64::NEG_INFINITY, f64::max)
+}
+
+fn answer_lead_over(scene: &Scene, rival: &str) -> f64 {
+    best_answer_score(scene) - score_of(scene, rival).unwrap()
+}
+
+fn best_rival_lead(scene: &Scene) -> f64 {
+    let best_rival = scene
+        .words
+        .iter()
+        .zip(kana_scores(scene))
+        .filter(|(w, _)| !scene.answer.contains(w))
+        .map(|(_, s)| *s)
         .fold(f64::NEG_INFINITY, f64::max);
-    let against = match word_against {
-        Some(w) => score(w).unwrap(),
-        None => scene
-            .words
-            .iter()
-            .zip(scores)
-            .filter(|(w, _)| !scene.answer.contains(w))
-            .map(|(_, s)| *s)
-            .fold(f64::NEG_INFINITY, f64::max),
-    };
-    against - answer
+    best_rival - best_answer_score(scene)
 }
 
 fn print_gaps(pairs: &[(&Scene, &Scene)], learn: &[&Scene]) {
@@ -448,7 +459,7 @@ fn print_gaps(pairs: &[(&Scene, &Scene)], learn: &[&Scene]) {
         .map(|(a, b)| {
             let needs_sending = !a.correct(&History::default(), BASELINE);
             (
-                -gap(b, Some(&a.answer[0])),
+                answer_lead_over(b, &a.answer[0]),
                 format!(
                     "[{}] {} > {}{}",
                     b.left,
@@ -475,7 +486,7 @@ fn print_gaps(pairs: &[(&Scene, &Scene)], learn: &[&Scene]) {
         .iter()
         .map(|s| {
             (
-                gap(s, None),
+                best_rival_lead(s),
                 format!("{} [{}] {} → {}", s.id, s.left, s.key, s.answer[0]),
             )
         })
@@ -560,7 +571,7 @@ fn main() {
     let learn: Vec<&Scene> = scenes
         .iter()
         .chain(&corpus)
-        .filter(|s| !s.correct(&baseline, BASELINE) && s.scores.is_some())
+        .filter(|s| !s.correct(&baseline, BASELINE) && matches!(s.scores, Scores::Kana(_)))
         .filter(|s| s.words.iter().any(|w| s.answer.contains(w)))
         .collect();
     print_gaps(&pairs, &learn);
@@ -609,7 +620,7 @@ fn main() {
             ..config
         };
         let [c1, c2] = corpus_passes(&corpus, config);
-        let switches: Vec<(bool, bool)> = learn.iter().map(|s| switched(s, config)).collect();
+        let switches: Vec<Switched> = learn.iter().map(|s| switched(s, config)).collect();
         println!(
             "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {c1} | {c2} |",
             match config.policy {
@@ -627,8 +638,8 @@ fn main() {
             rate(&pairs, |(a, b)| held(a, b, PULL_COMMITS[1], worst)),
             rate(&learn, |s| learned(s, LEARN_COMMITS[0], config)),
             rate(&learn, |s| learned(s, LEARN_COMMITS[1], config)),
-            rate(&switches, |s| s.0),
-            rate(&switches, |s| s.1),
+            rate(&switches, |s| s.back_to_baseline),
+            rate(&switches, |s| s.answer_again),
         );
     }
     if let Ok(detail) = std::env::var("DETAIL") {

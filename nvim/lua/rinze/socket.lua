@@ -1,7 +1,5 @@
 local M = {}
 
--- rinzed (crates/rinzed/src/main.rs の socket_path) も同じ規則でパスを決める。
--- 両者の一致は crates/rinzed/tests/fixtures/default_socket.json の表で確かめる。
 function M.path(os, env)
   local function get(name)
     local value = env[name]

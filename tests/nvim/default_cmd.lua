@@ -1,5 +1,3 @@
--- setup に何も渡さず、PATH の rinzed (flake の既定値を持つラッパー) が起動して変換できることを確かめる。
--- XDG_RUNTIME_DIR、XDG_DATA_HOME、XDG_STATE_HOME を一時ディレクトリに向けて呼ぶ (flake の checks.default-cmd)
 local root = vim.fn.fnamemodify(debug.getinfo(1, 'S').source:sub(2), ':p:h:h:h')
 vim.opt.runtimepath:prepend(root .. '/nvim')
 vim.cmd.runtime('plugin/rinze.lua')

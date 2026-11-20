@@ -18,8 +18,7 @@ end
 local preset = os.getenv('RINZE_BLINK_PRESET') or 'default'
 local keymaps = {
   default = { preset = 'default' },
-  -- README で案内する上書き。見出しの入力中の Enter は rinze に渡す
-  enter = {
+  ['enter-readme-override'] = {
     preset = 'enter',
     ['<CR>'] = {
       function(cmp)
@@ -123,7 +122,6 @@ local function in_history(prefix)
   return false
 end
 
--- Space で送ったときに出る候補を、その場の 4 件と一覧の各ページから順に集める
 local function converted_order(line, reading_keys)
   local order = {}
   local _, snaps = type_into(line, reading_keys .. string.rep('<Space>' .. snap, 12) .. '<C-g><C-g>')
@@ -158,7 +156,7 @@ local function finish()
 end
 
 local text, snaps
-if preset == 'enter' then
+if preset == 'enter-readme-override' then
   text, snaps = type_into('', 'Asita' .. wait_menu .. snap .. '<CR>' .. settle .. snap)
   check('enter preset で Enter を上書きすると、メニュー表示中の Enter は読みのまま確定する', { snaps[1].menu ~= nil, text, snaps[2].menu }, { true, 'あした', nil })
   text = type_into('', 'Asita' .. wait_menu .. '<CR>ka')
@@ -250,13 +248,12 @@ local burst_ms = (snaps[2].at - snaps[1].at) / 1e6
 check('一気に打ったあとのメニューは最後の読みの候補', { snaps[1].preedit, snaps[2].menu }, { '▽にほんごにゅうりょく', { '日本語入力' } })
 print(string.format('一気に打ち終えてから最後の読みのメニューが出るまで: %.1fms', burst_ms))
 
--- 1 打鍵の処理の所要時間を、連携の有無で同じ打鍵列について比べる。Space は直前にメニューを出したかで変換の点数づけの有無が変わるので分ける
 local function measure(label, before_space)
   local round = 'Kanji' .. before_space .. '<Space><C-g><C-g>Asitanoasa<C-g>'
   key_ms = {}
-  -- 左文脈を毎回変えて、前の回の点数を使い回さないようにする
   for i = 1, 5 do
-    type_into(label .. i, round)
+    local left_context_unseen_by_rinzed = label .. i
+    type_into(left_context_unseen_by_rinzed, round)
   end
   local typing, spaces = {}, {}
   local space_index = #'Kanji' + 1

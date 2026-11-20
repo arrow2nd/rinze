@@ -63,9 +63,18 @@
               touch $out
             '';
         default-cmd =
+          let
+            rinzedWritingPidToHome = pkgs.writeShellScriptBin "rinzed" ''
+              echo $$ > "$HOME/rinzed.pid"
+              exec ${pkgs.lib.getExe pkgs.rinzed} "$@"
+            '';
+          in
           pkgs.runCommand "rinze-default-cmd"
             {
-              nativeBuildInputs = [ pkgs.neovim ];
+              nativeBuildInputs = [
+                pkgs.neovim
+                rinzedWritingPidToHome
+              ];
               src = pkgs.lib.fileset.toSource {
                 root = ./.;
                 fileset = pkgs.lib.fileset.unions [
@@ -75,12 +84,9 @@
               };
             }
             ''
-              mkdir -p bin run data state
-              # プラグインは rinzed を切り離して起動するので、pid を書いてから flake の rinzed に置き換わり、終わりに止める
-              printf '#!%s\necho $$ > %s/pid\nexec %s "$@"\n' ${pkgs.runtimeShell} "$PWD" ${pkgs.lib.getExe pkgs.rinzed} > bin/rinzed
-              chmod +x bin/rinzed
-              trap '[ -f pid ] && kill "$(cat pid)"' EXIT
-              PATH=$PWD/bin:$PATH HOME=$PWD XDG_RUNTIME_DIR=$PWD/run XDG_DATA_HOME=$PWD/data XDG_STATE_HOME=$PWD/state \
+              mkdir -p run data state
+              trap '[ -f rinzed.pid ] && kill "$(cat rinzed.pid)"' EXIT
+              HOME=$PWD XDG_RUNTIME_DIR=$PWD/run XDG_DATA_HOME=$PWD/data XDG_STATE_HOME=$PWD/state \
                 nvim --headless --clean -l $src/tests/nvim/default_cmd.lua
               touch $out
             '';
@@ -99,7 +105,6 @@
               pkgs.clippy
               pkgs.neovim
             ];
-            # tests/nvim/blink.sh が blink.cmp との連携を確かめるのに使う
             RINZE_BLINK = "${pkgs.vimPlugins.blink-cmp}";
           }
           // pkgs.lib.optionalAttrs (pkgs.rinzed-unwrapped ? RUSTFLAGS) {

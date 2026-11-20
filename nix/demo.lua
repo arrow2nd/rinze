@@ -9,7 +9,6 @@ require('blink.cmp').setup({
   sources = { default = { 'buffer' } },
 })
 
--- モデルと辞書は PATH の rinzed (flake の既定値) に任せ、利用者のファイルと既定のソケットに触れないよう残りを一時ディレクトリに向ける
 require('rinze').setup({
   cmd = { 'rinzed', '--user-dict', work .. '/user.jisyo', '--history', work .. '/history.tsv' },
   socket = work .. '/rinze.sock',

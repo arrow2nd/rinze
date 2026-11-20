@@ -2,7 +2,6 @@ local M = {}
 
 local config = {
   -- 接続できなかったときに起動するコマンド。`--socket` は自動で足す。
-  -- flake の rinzed はモデルと辞書の既定値を持つので、PATH にあれば引数は要らない
   cmd = { 'rinzed' },
   socket = nil,
   startup_timeout = 30000,

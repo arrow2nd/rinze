@@ -210,14 +210,10 @@ enum Switch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KanaKey {
     Switch(Switch),
-    // 打ちかけのローマ字の続き。大文字でも見出しを始めない (ddskk の `zL` の「⇒」)
-    Roman(char),
+    RomanContinuation(char),
     Char(char),
-    // ddskk の `Q` (`skk-set-henkan-point-subr`)
     SetHenkanPoint,
-    // ddskk の `X` (`skk-purge-from-jisyo`)。候補の表示中でなければ `X` をそのまま入れる
     Purge,
-    // ddskk の `/` (`skk-abbrev-mode`)
     Abbrev,
     Space,
     Enter,
@@ -498,7 +494,7 @@ impl Latin {
 impl KanaKey {
     fn of(key: Key, roman: &Romaji) -> Self {
         match key {
-            Key::Char(c) if roman.continues(c) => KanaKey::Roman(c),
+            Key::Char(c) if roman.continues(c) => KanaKey::RomanContinuation(c),
             Key::Char('q') => KanaKey::Switch(Switch::ToggleKatakana),
             Key::Char('l') => KanaKey::Switch(Switch::Ascii),
             Key::Char('L') => KanaKey::Switch(Switch::FullwidthLatin),
@@ -506,7 +502,7 @@ impl KanaKey {
             Key::Char('X') => KanaKey::Purge,
             Key::Char('/') => KanaKey::Abbrev,
             Key::Char(c) => KanaKey::Char(c),
-            Key::Space if roman.continues(' ') => KanaKey::Roman(' '),
+            Key::Space if roman.continues(' ') => KanaKey::RomanContinuation(' '),
             Key::Space => KanaKey::Space,
             Key::Enter => KanaKey::Enter,
             Key::Backspace => KanaKey::Backspace,
@@ -586,7 +582,6 @@ impl KanaInput {
             Phase::Okuri { kana, .. } => kana,
             Phase::Abbrev { text } => return step.commit.push_str(&text),
             Phase::Henkan { conv, .. } => return conv.commit_displayed(self.script, step),
-            // 消すかを問うている候補は、確定しても選んだことにはしない
             Phase::Purge { conv, .. } => return step.commit.push_str(&conv.displayed(self.script)),
             Phase::Register { reg, .. } => {
                 return step.commit.push_str(&reg.midashi().typed(self.script));
@@ -629,7 +624,7 @@ impl KanaInput {
                 self.phase = Phase::Midashi { kana, roman };
                 return true;
             }
-            KanaKey::Roman(c) | KanaKey::Char(c) => {
+            KanaKey::RomanContinuation(c) | KanaKey::Char(c) => {
                 step.commit.push_str(&self.script.render(&roman.feed(c)));
                 true
             }
@@ -716,7 +711,7 @@ impl KanaInput {
                 self.feed_okuri(kana, consonant, Romaji::default(), consonant, step);
                 return true;
             }
-            KanaKey::Roman(c) => kana.push_str(&roman.feed(c)),
+            KanaKey::RomanContinuation(c) => kana.push_str(&roman.feed(c)),
             KanaKey::Char(c) => kana.push_str(&roman.feed(c.to_ascii_lowercase())),
             KanaKey::Space => {
                 kana.push_str(roman.flush());
@@ -756,7 +751,7 @@ impl KanaInput {
         match KanaKey::of(key, &roman) {
             KanaKey::Switch(switch) => self.commit_midashi(&kana, switch, step),
             KanaKey::SetHenkanPoint => self.start_empty_midashi(&kana, step),
-            KanaKey::Roman(c) | KanaKey::Char(c) => {
+            KanaKey::RomanContinuation(c) | KanaKey::Char(c) => {
                 self.feed_okuri(kana, consonant, roman, c, step)
             }
             KanaKey::Space | KanaKey::Abbrev | KanaKey::Purge => {
@@ -1246,7 +1241,6 @@ impl Conversion {
         }
     }
 
-    /// 一覧の表示中は見出しをかなのまま確定し、候補を選んだことにはしない。
     fn commit_displayed(&self, script: Script, step: &mut Step) {
         match self.cursor {
             Cursor::Inline(i) => {

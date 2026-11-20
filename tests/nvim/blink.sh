@@ -18,7 +18,6 @@ for dir in config data state cache; do
 done
 export XDG_CONFIG_HOME=$work/config XDG_DATA_HOME=$work/data XDG_STATE_HOME=$work/state XDG_CACHE_HOME=$work/cache
 
-# default preset で全体を、enter preset で Enter の扱いを確かめる
-for preset in default enter enter-unchanged; do
+for preset in default enter-readme-override enter-unchanged; do
   RINZE_BLINK_PRESET=$preset nvim --headless --clean -l "$root/tests/nvim/blink.lua" "$rinzed" "$RINZE_MODEL" "$RINZE_DICT" "$socket" "$work/user.jisyo" "$work/history.tsv" "$RINZE_BLINK"
 done

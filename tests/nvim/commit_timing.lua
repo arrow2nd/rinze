@@ -1,5 +1,3 @@
--- 確定 1 回の所要時間を、学習なし、空の履歴、行の多い履歴の rinzed で交互に測る。
--- 選び直した候補の確定 (履歴を書く) と、最初の候補の確定 (書かない) を、それぞれ確定させるキー 1 回の往復で測る。
 local rinzed, model, dict, work, rounds, history_lines = unpack(arg)
 rounds, history_lines = tonumber(rounds), tonumber(history_lines)
 
