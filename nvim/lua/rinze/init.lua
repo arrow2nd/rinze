@@ -24,7 +24,8 @@ local state = {
   preedit = '',
   anchor = nil,
   mode = nil,
-  keys_mapped = false,
+  passthrough = false,
+  held = nil,
   float_buf = nil,
   float_win = nil,
   blink = nil,
@@ -157,15 +158,125 @@ local function show_float(minibuffer, candidates)
   end
 end
 
-local map_input_keys, unmap_input_keys
+local input_keys = {}
+local function add_key(lhs, name)
+  local key = { lhs = lhs, lhsraw = vim.keycode(lhs), name = name, index = #input_keys + 1 }
+  -- 右辺は Lua 関数でなく <Cmd> にする。blink.cmp がバッファローカルに割り当てたキーの fallback から呼ばれたとき、
+  -- Lua 関数の右辺は vim.schedule で後回しにされ、続けて打ったキーと順序が入れ替わる
+  key.rhs = string.format("<Cmd>lua require('rinze')._press(%d)<CR>", key.index)
+  table.insert(input_keys, key)
+  return key
+end
+for lhs, name in pairs(special_keys) do
+  add_key(lhs, name)
+end
+for byte = 33, 126 do
+  local c = string.char(byte)
+  add_key(({ ['<'] = '<lt>', ['|'] = '<Bar>', ['\\'] = '<Bslash>' })[c] or c, c)
+end
+local kakutei = add_key('<C-j>', 'ctrl-j')
+local escape = add_key('<Esc>', 'escape')
+
+-- blink.cmp は自分のキーを挿入モードに入るときにバッファローカルに置き、fallback ではそのとき無かった
+-- バッファローカルの割り当ての代わりに global な割り当てを探す。blink.cmp のキーは奪わず、rinze を global に置いて
+-- fallback から rinze に回るようにする
+local BLINK_DESC_PREFIX = 'blink.cmp: '
+local OWN_DESC = 'rinze'
+
+local function keymap_lookup()
+  local by_scope = {}
+  return function(buf, key)
+    local scope = buf or 'global'
+    if not by_scope[scope] then
+      local by_lhs = {}
+      for _, map in ipairs(buf and vim.api.nvim_buf_get_keymap(buf, 'i') or vim.api.nvim_get_keymap('i')) do
+        -- <C-j> などは lhsraw が修飾キーつきの形になり、lhsrawalt が 1 バイトの形になる
+        by_lhs[map.lhsraw] = map
+        if map.lhsrawalt then
+          by_lhs[map.lhsrawalt] = map
+        end
+      end
+      by_scope[scope] = by_lhs
+    end
+    return by_scope[scope][key.lhsraw]
+  end
+end
+
+local function take(buf, key, find)
+  local scope = buf
+  local original = find(buf, key)
+  if original and vim.startswith(original.desc or '', BLINK_DESC_PREFIX) then
+    scope = nil
+    original = find(nil, key)
+  end
+  local opts = { noremap = true, nowait = true, silent = true, desc = OWN_DESC }
+  if scope then
+    vim.api.nvim_buf_set_keymap(scope, 'i', key.lhs, key.rhs, opts)
+  else
+    vim.api.nvim_set_keymap('i', key.lhs, key.rhs, opts)
+  end
+  return { buf = scope, original = original, aside = false }
+end
+
+local function restore(key, taken, find)
+  if taken.buf and not vim.api.nvim_buf_is_valid(taken.buf) then
+    return
+  end
+  local current = find(taken.buf, key)
+  if not (current and current.desc == OWN_DESC) then
+    return
+  end
+  if taken.buf then
+    vim.api.nvim_buf_del_keymap(taken.buf, 'i', key.lhs)
+  else
+    vim.api.nvim_del_keymap('i', key.lhs)
+  end
+  if taken.original then
+    -- mapset はバッファローカルの割り当てをカレントバッファに置く
+    vim.api.nvim_buf_call(taken.buf or 0, function()
+      vim.fn.mapset(taken.original)
+    end)
+  end
+end
+
+local function release(held, index, find)
+  local taken = held.keys[index]
+  held.keys[index] = nil
+  if not taken.aside then
+    restore(input_keys[index], taken, find)
+  end
+end
+
+local function sync()
+  local buf = vim.api.nvim_get_current_buf()
+  local inserting = state.enabled and vim.api.nvim_get_mode().mode:match('^[iR]') ~= nil
+  local held = state.held
+  if held and (held.buf ~= buf or not inserting) then
+    local find = keymap_lookup()
+    for index in pairs(held.keys) do
+      release(held, index, find)
+    end
+    held = nil
+  end
+  if inserting then
+    held = held or { buf = buf, keys = {} }
+    local find = keymap_lookup()
+    for _, key in ipairs(input_keys) do
+      local wanted = key == kakutei or not state.passthrough
+      if wanted and not held.keys[key.index] then
+        held.keys[key.index] = take(buf, key, find)
+      elseif not wanted and held.keys[key.index] then
+        release(held, key.index, find)
+      end
+    end
+  end
+  state.held = held
+end
 
 local function follow_mode(res)
-  if res.passthrough == state.keys_mapped then
-    if res.passthrough then
-      unmap_input_keys()
-    else
-      map_input_keys()
-    end
+  if res.passthrough ~= state.passthrough then
+    state.passthrough = res.passthrough
+    sync()
   end
   if res.mode ~= state.mode then
     state.mode = res.mode
@@ -210,13 +321,25 @@ end
 
 -- 確定文字列は打鍵として先読みに入れる。API で書き込むと `.` で繰り返せず、undo も打鍵と別の単位になる。
 -- 'i' で先読み中のキーより前に差し込むので、後に入れるものから先に送る
-local function type_ahead(commit, lhs)
-  if lhs then
-    vim.api.nvim_feedkeys(vim.keycode(lhs), 'ni', false)
-  end
+local function type_ahead(commit)
   if commit ~= '' then
     vim.api.nvim_feedkeys(commit, 'ni', true)
   end
+end
+
+local function pass_through(key, commit)
+  local taken = state.held and state.held.keys[key.index]
+  local find = keymap_lookup()
+  local original = taken and not taken.aside and (taken.original or (taken.buf and find(nil, key)))
+  if original then
+    taken.aside = true
+    restore(key, taken, find)
+    vim.api.nvim_feedkeys(vim.keycode(string.format("<Cmd>lua require('rinze')._resume(%d)<CR>", key.index)), 'ni', false)
+    vim.api.nvim_feedkeys(key.lhsraw, 'mi', false)
+  else
+    vim.api.nvim_feedkeys(key.lhsraw, 'ni', false)
+  end
+  type_ahead(commit)
 end
 
 local function commit_or_hold(commit)
@@ -290,8 +413,8 @@ local function settle_menu(name)
   return held, consumed
 end
 
-local function on_key(name, lhs)
-  local held, consumed = settle_menu(name)
+local function on_key(key)
+  local held, consumed = settle_menu(key.name)
   if consumed then
     type_ahead(held)
     return
@@ -299,72 +422,48 @@ local function on_key(name, lhs)
   -- CursorMovedI は先読みが尽きるまで起きないので、続けて打たれたキーの前でも確かめる
   flush_if_cursor_left_preedit()
   local left = left_of_cursor() .. held
-  local ok, res = pcall(request, 'key', name, left)
+  local ok, res = pcall(request, 'key', key.name, left)
   if not ok then
     vim.notify(tostring(res), vim.log.levels.ERROR)
-    type_ahead(held, lhs)
+    pass_through(key, held)
     return
   end
-  type_ahead(held .. res.commit, not res.handled and lhs or nil)
+  if res.handled then
+    type_ahead(held .. res.commit)
+  else
+    pass_through(key, held .. res.commit)
+  end
   show(res, left .. res.commit)
 end
 
 local function on_escape()
   local held = settle_menu('escape')
   local ok, res = pcall(request, 'flush')
-  type_ahead(held .. (ok and res.commit or ''), '<Esc>')
+  pass_through(escape, held .. (ok and res.commit or ''))
   if ok then
     show(res)
   end
 end
 
-local input_keys = {}
-local function add_key(lhs, name)
-  local key = { lhs = lhs, name = name, index = #input_keys + 1 }
-  table.insert(input_keys, key)
-  return key
-end
-for lhs, name in pairs(special_keys) do
-  add_key(lhs, name)
-end
-for byte = 33, 126 do
-  local c = string.char(byte)
-  add_key(({ ['<'] = '<lt>', ['|'] = '<Bar>', ['\\'] = '<Bslash>' })[c] or c, c)
-end
-local kakutei = add_key('<C-j>', 'ctrl-j')
-
 function M._press(index)
   local key = input_keys[index]
-  on_key(key.name, key.lhs)
-end
-
-M._escape = on_escape
-
--- 右辺は Lua 関数でなく <Cmd> にする。blink.cmp がバッファローカルに割り当てたキーの fallback から呼ばれたとき、
--- Lua 関数の右辺は vim.schedule で後回しにされ、続けて打ったキーと順序が入れ替わる
-local function map_key(key)
-  local rhs = string.format("<Cmd>lua require('rinze')._press(%d)<CR>", key.index)
-  vim.keymap.set('i', key.lhs, rhs, { nowait = true, silent = true, desc = 'rinze' })
-end
-
-function map_input_keys()
-  for _, key in ipairs(input_keys) do
-    if key ~= kakutei then
-      map_key(key)
-    end
+  local taken = state.held and state.held.keys[index]
+  -- blink.cmp の fallback は、挿入モードに入ったときにあった rinze の割り当てを覚えていて、rinze が手を離したあとも呼ぶ
+  if not taken or taken.aside then
+    vim.api.nvim_feedkeys(key.lhsraw, 'ni', false)
+  elseif key == escape then
+    on_escape()
+  else
+    on_key(key)
   end
-  vim.keymap.set('i', '<Esc>', "<Cmd>lua require('rinze')._escape()<CR>", { nowait = true, silent = true, desc = 'rinze' })
-  state.keys_mapped = true
 end
 
-function unmap_input_keys()
-  for _, key in ipairs(input_keys) do
-    if key ~= kakutei then
-      pcall(vim.keymap.del, 'i', key.lhs)
-    end
+function M._resume(index)
+  local taken = state.held and state.held.keys[index]
+  if taken and taken.aside then
+    state.held.keys[index] = nil
   end
-  pcall(vim.keymap.del, 'i', '<Esc>')
-  state.keys_mapped = false
+  sync()
 end
 
 function M.setup(opts)
@@ -381,8 +480,13 @@ function M.enable()
     state.blink = require('rinze.blink')
     state.blink.attach(socket_path(), { choose = choose })
   end
-  map_key(kakutei)
   local group = vim.api.nvim_create_augroup('rinze', { clear = true })
+  -- ModeChanged は InsertEnter のあとに起きるので、InsertEnter で割り当てを置くプラグインより後に置ける。
+  -- 同じ文字で始まる長い割り当てより後に置いた <nowait> だけが、続きを待たずに働く
+  vim.api.nvim_create_autocmd({ 'ModeChanged', 'BufEnter' }, {
+    group = group,
+    callback = sync,
+  })
   -- 挿入モードのまま別のウィンドウへ移ったときは InsertLeave が起きない
   vim.api.nvim_create_autocmd({ 'InsertLeave', 'WinLeave', 'BufLeave' }, {
     group = group,
@@ -394,6 +498,7 @@ function M.enable()
   })
   state.enabled = true
   follow_mode(res)
+  sync()
 end
 
 function M.disable()
@@ -401,14 +506,13 @@ function M.disable()
     return
   end
   flush_in_place()
-  unmap_input_keys()
-  pcall(vim.keymap.del, 'i', kakutei.lhs)
+  state.enabled = false
+  sync()
   vim.api.nvim_del_augroup_by_name('rinze')
   if state.blink then
     state.blink.detach()
     state.blink = nil
   end
-  state.enabled = false
   state.mode = nil
   vim.cmd.redrawstatus()
 end

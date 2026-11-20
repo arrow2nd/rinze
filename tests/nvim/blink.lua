@@ -257,7 +257,8 @@ local function measure(label, before_space)
   end
   local typing, spaces = {}, {}
   local space_index = #'Kanji' + 1
-  local per_round = #'Kanji' + 3 + #'Asitanoasa' + 1
+  local esc_typed_by_type_into = 1
+  local per_round = #'Kanji' + 3 + #'Asitanoasa' + 1 + esc_typed_by_type_into
   for i, ms in ipairs(key_ms) do
     table.insert((i - 1) % per_round + 1 == space_index and spaces or typing, ms)
   end

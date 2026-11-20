@@ -421,7 +421,11 @@ vim.o.statusline = "%f %{v:lua.require'rinze'.status()}"
 ```
 
 `:RinzeEnable` `:RinzeDisable` `:RinzeToggle` でも切り替えられる。有効な間は挿入モードの印字可能文字と Space、Enter、BackSpace、`C-g`、`C-j`、`C-q`、Esc を rinze が受け取る。
-ASCII モードの間は `C-j` 以外の対応を外すので、打鍵は rinze を経由せず、rinze が無効なときと同じに Neovim が処理する。
+
+- 割り当ては挿入モードの間だけ、そのバッファにバッファローカルの `<nowait>` で置き、挿入モードを抜けるか別のバッファへ移ると外して、置く前の割り当てを戻す。global な割り当て (mini.pairs など) は書き換えない。
+- ほかのプラグインのバッファローカルの割り当て (nvim-ts-autotag の `>` など) より rinze が優先する。同じキーで始まる長い割り当て (llama.vim の挿入モードの `<Leader>llf` など) があっても、続きのキーを `timeoutlen` だけ待たない。
+- ASCII モードの間は `C-j` 以外の割り当てを外すので、打鍵は rinze を経由せず、rinze が無効なときと同じに Neovim とほかのプラグインが処理する。
+- rinze が処理しなかったキー (見出しの無いときの Enter、BackSpace、Space と、Esc) は、rinze が無いときに働く割り当て (mini.pairs の `<CR>` と `<BS>`、picker の `<CR>` と `<Esc>` など) に渡す。割り当てが無ければ Neovim がそのまま処理する。
 
 有効にした直後はひらがなモードで始まる。挿入モードを抜けると入力途中のものを確定するが、モードはそのまま残り、次に挿入モードに入ったときも同じモードで続く。
 
@@ -480,5 +484,7 @@ require('blink.cmp').setup({
 ```
 
 ほかに rinze が受け取るキー (印字可能文字、Space、BackSpace、`C-g`、`C-j`、`C-q`、Esc) を blink.cmp の `keymap` に割り当てる場合も、同じく見出しの入力中は `fallback` に回す。rinze のキーの割り当ては `<Cmd>` を右辺にしているので、blink.cmp の `fallback` から呼ばれても、続けて打ったキーと順序が入れ替わらない。
+
+blink.cmp が割り当てたキーは、ほかのバッファローカルの割り当てと違って rinze が奪わず、blink.cmp が先に受け取る。blink.cmp の `fallback` は挿入モードに入ったときに無かったバッファローカルの割り当ての代わりに global な割り当てを探すので、rinze はそのキーだけ挿入モードの間 global に置き、抜けるときに置く前の割り当てを戻す。
 
 blink.cmp は受け入れ (`C-y`) と選択 (`C-n`) を `vim.schedule` で後回しにするので、rinze はキーを処理する前に `vim.wait(0)` で後回しの処理を先に済ませ、受け入れの直後に間を空けずに打ったキーを受け入れのあとに処理する。仮に入れた候補を確かめて取り消すのに blink.cmp の内部の `blink.cmp.completion.list` (`preview_undo`、`get_selected_item`、`undo_preview`) を使っている。blink.cmp 1.10.2 で確かめ、`tests/nvim/blink.sh` が守る。
