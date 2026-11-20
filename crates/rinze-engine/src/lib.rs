@@ -12,6 +12,7 @@
 //! 登録する語の入力欄も内側の [`Session`] で変換できるので、登録は入れ子になる。
 //! 入力欄は外側とは別のモードを持ち、ddskk と同じくひらがなで始まる。
 //! 候補の表示中に `X` を打つと、ddskk と同じく確かめてから表示中の候補を辞書から消す。
+//! 候補を確定するたびに、確定のしかたによらず [`Converter::committed`] で知らせる。
 
 mod romaji;
 mod script;
@@ -111,6 +112,17 @@ pub trait Converter {
     fn register(&mut self, midashi: &Midashi, word: &str);
     /// 語を辞書から消す。
     fn purge(&mut self, midashi: &Midashi, word: &str);
+    /// 候補を確定した。確定のしかた (Enter、次の文字、一覧からの選択、モードの切り替え、flush、辞書登録など) によらず、
+    /// 確定した文字列に候補を含めるたびに 1 回呼ぶ。`word` は送りがなを含まない。
+    fn committed(&mut self, midashi: &Midashi, word: &str, pick: Pick);
+}
+
+/// 確定した候補が、変換を始めたときに最初に出した候補だったか。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pick {
+    First,
+    /// 候補を送ったか一覧から選んだもの、または辞書登録した語。
+    Other,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -339,23 +351,29 @@ impl Session {
     }
 
     /// 入力途中のものを表示どおりに確定し、状態を空にする。モードは変えない。フロントエンドが入力先を離れるときに使う。
-    pub fn flush(&mut self) -> Response {
-        let commit = self.take_pending();
+    pub fn flush(&mut self, converter: &mut dyn Converter) -> Response {
+        let commit = self.take_pending(converter);
         self.response(true, commit)
     }
 
     /// [`Session::flush`] したうえで、モードを始めのひらがなに戻す。フロントエンドが入力を有効にしたときに使う。
-    pub fn reset(&mut self) -> Response {
-        let commit = self.take_pending();
+    pub fn reset(&mut self, converter: &mut dyn Converter) -> Response {
+        let commit = self.take_pending(converter);
         self.input = Input::default();
         self.response(true, commit)
     }
 
-    fn take_pending(&mut self) -> String {
-        match &mut self.input {
-            Input::Kana(kana) => kana.flush(),
-            Input::Latin(_) => String::new(),
+    fn take_pending(&mut self, converter: &mut dyn Converter) -> String {
+        let mut step = Step {
+            left_context: "",
+            commit: String::new(),
+            next_mode: None,
+            converter,
+        };
+        if let Input::Kana(kana) = &mut self.input {
+            kana.flush(&mut step);
         }
+        step.commit
     }
 
     fn response(&self, handled: bool, commit: String) -> Response {
@@ -523,18 +541,20 @@ impl KanaInput {
         }
     }
 
-    fn flush(&mut self) -> String {
+    fn flush(&mut self, step: &mut Step) {
         let hiragana = match mem::take(&mut self.phase) {
             Phase::Direct { mut roman } => roman.flush().to_string(),
             Phase::Midashi { kana, mut roman } => kana + roman.flush(),
             Phase::Okuri { kana, .. } => kana,
-            Phase::Abbrev { text } => return text,
-            Phase::Henkan { conv, .. } | Phase::Purge { conv, .. } => {
-                return conv.displayed(self.script);
+            Phase::Abbrev { text } => return step.commit.push_str(&text),
+            Phase::Henkan { conv, .. } => return conv.commit_displayed(self.script, step),
+            // 消すかを問うている候補は、確定しても選んだことにはしない
+            Phase::Purge { conv, .. } => return step.commit.push_str(&conv.displayed(self.script)),
+            Phase::Register { reg, .. } => {
+                return step.commit.push_str(&reg.midashi().typed(self.script));
             }
-            Phase::Register { reg, .. } => return reg.midashi().typed(self.script),
         };
-        self.script.render(&hiragana)
+        step.commit.push_str(&self.script.render(&hiragana));
     }
 
     fn direct(&mut self, mut roman: Romaji, key: Key, step: &mut Step) -> bool {
@@ -809,8 +829,8 @@ impl KanaInput {
                 return true;
             }
             (Key::Char(c), Cursor::Page(page)) => {
-                if let Some(word) = conv.page_item(page, c, self.script) {
-                    step.commit.push_str(&word);
+                if let Some(word) = conv.page_word(page, c) {
+                    step.commit_candidate(&conv.midashi, word, Pick::Other, self.script);
                     self.phase = Phase::Direct {
                         roman: trailing_roman,
                     };
@@ -819,23 +839,23 @@ impl KanaInput {
             }
             (_, Cursor::Page(_)) => {}
             (Key::Enter, Cursor::Inline(_)) => {
-                step.commit.push_str(&conv.displayed(self.script));
+                conv.commit_displayed(self.script, step);
                 self.phase = Phase::Direct {
                     roman: trailing_roman,
                 };
                 return true;
             }
+            // ddskk の `skk-delete-backward-char` と同じく、確定してから 1 字消す
             (Key::Backspace, Cursor::Inline(_)) => {
-                let mut word = conv.displayed(self.script);
-                word.pop();
-                step.commit.push_str(&word);
+                conv.commit_displayed(self.script, step);
+                step.commit.pop();
                 self.phase = Phase::Direct {
                     roman: trailing_roman,
                 };
                 return true;
             }
             (Key::Char(_) | Key::Kakutei | Key::ToggleHalfwidth, Cursor::Inline(_)) => {
-                step.commit.push_str(&conv.displayed(self.script));
+                conv.commit_displayed(self.script, step);
                 return self.direct(trailing_roman, key, step);
             }
         }
@@ -909,8 +929,7 @@ impl KanaInput {
                 Key::Enter if !reg.text.is_empty() => {
                     let word = reg.word_without_okuri();
                     step.converter.register(reg.midashi(), word);
-                    step.commit
-                        .push_str(&reg.midashi().surface(word, self.script));
+                    step.commit_candidate(reg.midashi(), word, Pick::Other, self.script);
                     self.phase = Phase::Direct {
                         roman: trailing_roman,
                     };
@@ -1008,6 +1027,11 @@ impl KanaInput {
 impl Step<'_> {
     fn left_context_with_commit(&self) -> String {
         format!("{}{}", self.left_context, self.commit)
+    }
+
+    fn commit_candidate(&mut self, midashi: &Midashi, word: &str, pick: Pick, script: Script) {
+        self.commit.push_str(&midashi.surface(word, script));
+        self.converter.committed(midashi, word, pick);
     }
 }
 
@@ -1157,6 +1181,17 @@ impl Conversion {
         }
     }
 
+    /// 一覧の表示中は見出しをかなのまま確定し、候補を選んだことにはしない。
+    fn commit_displayed(&self, script: Script, step: &mut Step) {
+        match self.cursor {
+            Cursor::Inline(i) => {
+                let pick = if i == 0 { Pick::First } else { Pick::Other };
+                step.commit_candidate(&self.midashi, &self.candidates[i], pick, script);
+            }
+            Cursor::Page(_) => step.commit.push_str(&self.midashi.typed(script)),
+        }
+    }
+
     fn advance_to_generated(&mut self, step: &mut Step) -> bool {
         if self.generated {
             return false;
@@ -1195,11 +1230,9 @@ impl Conversion {
         &self.candidates[start..end]
     }
 
-    fn page_item(&self, page: usize, label: char, script: Script) -> Option<String> {
+    fn page_word(&self, page: usize, label: char) -> Option<&str> {
         let index = PAGE_LABELS.iter().position(|&l| l == label)?;
-        self.page_words(page)
-            .get(index)
-            .map(|w| self.midashi.surface(w, script))
+        self.page_words(page).get(index).map(String::as_str)
     }
 
     fn next(&mut self) -> bool {

@@ -4,13 +4,15 @@ use std::fs::{File, OpenOptions, TryLockError};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Mutex;
 
 use rinze_dict::Dictionary;
 use rinze_zenz::{Model, Zenz};
+use rinzed::history::History;
 use rinzed::user_dict::UserDictionary;
-use rinzed::{Backend, log};
+use rinzed::{Backend, Learning, log};
 
-const USAGE: &str = "使い方: rinzed --model <zenz の gguf> --dict <SKK 辞書> [--socket <パス>] [--user-dict <パス>] [--threads <数>]";
+const USAGE: &str = "使い方: rinzed --model <zenz の gguf> --dict <SKK 辞書> [--socket <パス>] [--user-dict <パス>] [--history <パス> | --no-learning] [--threads <数>]";
 
 /// `sockaddr_un.sun_path` の大きさ。パスは終端の NUL を含めてここに収まらなければならない。
 #[cfg(target_os = "macos")]
@@ -26,7 +28,13 @@ struct Args {
     dict: PathBuf,
     socket: PathBuf,
     user_dict: PathBuf,
+    learning: LearningArg,
     threads: i32,
+}
+
+enum LearningArg {
+    Off,
+    History(PathBuf),
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -34,15 +42,22 @@ fn parse_args() -> Result<Args, String> {
     let mut dict = None;
     let mut socket = None;
     let mut user_dict = None;
+    let mut history = None;
+    let mut no_learning = false;
     let mut threads = None;
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
+        if flag == "--no-learning" {
+            no_learning = true;
+            continue;
+        }
         let value = it.next().ok_or_else(|| format!("{flag} に値がない"))?;
         match flag.as_str() {
             "--model" => model = Some(PathBuf::from(value)),
             "--dict" => dict = Some(PathBuf::from(value)),
             "--socket" => socket = Some(PathBuf::from(value)),
             "--user-dict" => user_dict = Some(PathBuf::from(value)),
+            "--history" => history = Some(PathBuf::from(value)),
             "--threads" => {
                 threads = Some(
                     value
@@ -58,6 +73,11 @@ fn parse_args() -> Result<Args, String> {
         dict: dict.ok_or("--dict が必要")?,
         socket: socket.map_or_else(default_socket, Ok)?,
         user_dict: user_dict.map_or_else(default_user_dict, Ok)?,
+        learning: match (no_learning, history) {
+            (true, Some(_)) => return Err("--no-learning と --history は同時に指定できない".into()),
+            (true, None) => LearningArg::Off,
+            (false, history) => LearningArg::History(history.map_or_else(default_history, Ok)?),
+        },
         threads: threads.unwrap_or_else(default_threads),
     })
 }
@@ -120,6 +140,20 @@ fn default_user_dict() -> Result<PathBuf, String> {
         None => home(std::env::var_os("HOME"))?.join(".local/share"),
     };
     Ok(data.join("rinze/user.jisyo"))
+}
+
+/// 履歴は消えても困らないが残したい状態なので、Linux では XDG の state に置く。macOS には state に当たる場所が無い。
+fn default_history() -> Result<PathBuf, String> {
+    if cfg!(target_os = "macos") {
+        return Ok(
+            home(std::env::var_os("HOME"))?.join("Library/Application Support/rinze/history.tsv")
+        );
+    }
+    let state = match std::env::var_os("XDG_STATE_HOME").filter(|dir| !dir.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => home(std::env::var_os("HOME"))?.join(".local/state"),
+    };
+    Ok(state.join("rinze/history.tsv"))
 }
 
 fn check_socket_path(socket: &Path) -> Result<(), String> {
@@ -197,17 +231,30 @@ fn start(args: Args) -> Result<AnotherRinzedServes, Box<dyn std::error::Error>> 
     );
     let user = UserDictionary::open(args.user_dict.clone())
         .map_err(|e| format!("ユーザー辞書 {} を読めない: {e}", args.user_dict.display()))?;
+    let (learning, learning_note) = match &args.learning {
+        LearningArg::Off => (Learning::Off, "学習なし".to_string()),
+        LearningArg::History(path) => {
+            let history = History::open(path.clone())
+                .map_err(|e| format!("学習の履歴 {} を読めない: {e}", path.display()))?;
+            (
+                Learning::On(Mutex::new(history)),
+                format!("学習の履歴 {}", path.display()),
+            )
+        }
+    };
     let model_error = |e| format!("モデル {} を読めない: {e}", args.model.display());
     let model: &'static Model = Box::leak(Box::new(Model::load(&args.model).map_err(model_error)?));
     let zenz = Zenz::new(model, args.threads).map_err(model_error)?;
-    let backend: &'static Backend<'static> = Box::leak(Box::new(Backend::new(dict, user, zenz)));
+    let backend: &'static Backend<'static> =
+        Box::leak(Box::new(Backend::new(dict, user, zenz, learning)));
 
-    match serve_on(&args.socket, &args.user_dict, backend)? {}
+    let note = format!("ユーザー辞書 {}、{learning_note}", args.user_dict.display());
+    match serve_on(&args.socket, &note, backend)? {}
 }
 
 fn serve_on(
     socket: &Path,
-    user_dict: &Path,
+    note: &str,
     backend: &'static Backend<'static>,
 ) -> Result<Infallible, Box<dyn std::error::Error>> {
     match std::fs::remove_file(socket) {
@@ -217,11 +264,7 @@ fn serve_on(
         _ => {}
     }
     let listener = UnixListener::bind(socket)?;
-    log!(
-        "rinzed: {} で待ち受け中 (ユーザー辞書 {})",
-        socket.display(),
-        user_dict.display()
-    );
+    log!("rinzed: {} で待ち受け中 ({note})", socket.display());
     loop {
         let (stream, _) = listener.accept()?;
         std::thread::spawn(move || {

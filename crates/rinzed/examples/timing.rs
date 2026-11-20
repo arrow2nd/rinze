@@ -3,8 +3,8 @@ use std::time::Instant;
 use rinze_dict::Dictionary;
 use rinze_engine::{Midashi, Okuri, Query};
 use rinze_zenz::{Model, Zenz};
-use rinzed::Backend;
 use rinzed::user_dict::UserDictionary;
+use rinzed::{Backend, Learning};
 
 struct Case {
     left_context: &'static str,
@@ -62,6 +62,7 @@ fn main() {
         Dictionary::from_bytes(&std::fs::read(std::env::var("RINZE_DICT").unwrap()).unwrap()),
         UserDictionary::in_memory(),
         Zenz::new(&model, 8).unwrap(),
+        Learning::Off,
     );
     println!(
         "読み\t辞書の候補数\t並べ替え ms (中央値/最小/最大)\t生成 ms (中央値/最小/最大)\t生成した候補"

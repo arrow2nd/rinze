@@ -1,10 +1,10 @@
-local rinzed, model, dict, socket, user_dict = unpack(arg)
+local rinzed, model, dict, socket, user_dict, history = unpack(arg)
 local root = vim.fn.fnamemodify(debug.getinfo(1, 'S').source:sub(2), ':p:h:h:h')
 vim.opt.runtimepath:prepend(root .. '/nvim')
 vim.cmd.runtime('plugin/rinze.lua')
 
 local rinze = require('rinze')
-local cmd = { rinzed, '--model', model, '--dict', dict, '--user-dict', user_dict }
+local cmd = { rinzed, '--model', model, '--dict', dict, '--user-dict', user_dict, '--history', history }
 
 local failures = 0
 local function check(label, got, want)
@@ -87,6 +87,26 @@ check('koredeATt の途中', snaps[2], { preedit = '▼会っt', buffer = 'こ�
 check('<Space> で 2 番目の候補', snaps[3], { preedit = '▼合っt', buffer = 'これで' })
 check('koredeATteimasuka? のバッファ', text, 'これで合っていますか？')
 
+local function in_history(prefix)
+  for _, line in ipairs(vim.fn.filereadable(history) == 1 and vim.fn.readfile(history) or {}) do
+    if vim.startswith(line, prefix) then
+      return true
+    end
+  end
+  return false
+end
+
+check('送って選んだ候補を学習の履歴に書く', in_history('あt\t合\t'), true)
+text, snaps = type_in_new_buffer('koredeATt' .. snapshot .. '<CR>')
+check('選び直した候補が同じ文脈で 1 位に出る', snaps[1].preedit, '▼合っt')
+
+for _ = 1, 3 do
+  type_in_new_buffer('Asita<Space>AEmasu')
+end
+text, snaps = type_in_new_buffer('Mayone-zu<Space>woAE' .. snapshot .. 'masu')
+check('明日会えを何度確定しても、マヨネーズをのあとは和えが 1 位', snaps[1].preedit, '▼和え')
+check('最初の候補をそのまま確定しても履歴に書かない', in_history('あe\t'), false)
+
 text, snaps = type_in_new_buffer('Kanji<Space><Space><Space><Space>' .. snapshot .. '<Space>' .. snapshot .. 'a' .. snapshot)
 print('一覧の表示: ' .. vim.inspect(snaps))
 check('4 回目の Space まではその場に出す', snaps[1].list, nil)
@@ -143,6 +163,9 @@ end, 50)
 check('止めた rinzed のソケットが残っている', vim.uv.fs_stat(socket) ~= nil, true)
 text, snaps = type_in_new_buffer('Rinze<Space>' .. snapshot)
 check('残ったソケットを片付けて起動し直した rinzed でも登録した語が出る', snaps[1].preedit, '▼' .. word)
+text, snaps = type_in_new_buffer('koredeATt' .. snapshot .. '<CR>')
+check('rinzed を起動し直しても選び直した候補が 1 位に出る', snaps[1].preedit, '▼合っt')
+check('辞書登録した語も学習の履歴に書く', in_history('りんぜ\t' .. word .. '\t'), true)
 
 
 text, snaps = type_in_new_buffer('Rinze<Space>X' .. snapshot .. 'yes<CR>' .. snapshot)
@@ -150,6 +173,7 @@ print('X で消す途中: ' .. vim.inspect(snaps))
 check('X で消すかを問う', snaps[1].list, 'りんぜ /' .. word .. '/ を辞書から削除します。良いですか？ (yes or no) ')
 check('yes で消して何も確定しない', { snaps[2].preedit, snaps[2].list, text }, { '', nil, '' })
 check('ユーザー辞書からも消える', table.concat(vim.fn.readfile(user_dict), '\n'):find('りんぜ /', 1, true), nil)
+check('学習の履歴からも消える', in_history('りんぜ\t'), false)
 
 local position_snapshot = '<F8>'
 vim.keymap.set('i', position_snapshot, function()
@@ -188,6 +212,9 @@ check('u で 1 回の挿入をまとめて戻す', text, '')
 
 text = type_into({ '' }, 'iQasita<Space>da/file<Space>wo')
 check('Q で見出しを始め、/ で英字の見出しを変換する', text, '明日だファイルを')
+
+text, snaps = type_into({ '駅で友達に' }, 'AATt' .. position_snapshot .. '<CR>')
+check('別の文脈では選び直した候補に引っぱられない', snaps[1].preedit, '▼会っt')
 
 if failures > 0 then
   print(failures .. ' 件失敗')

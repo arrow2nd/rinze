@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use rinze_engine::{
-    CandidatePage, Converter, Key, Midashi, Minibuffer, Mode, Okuri, Query, Response, Session,
+    CandidatePage, Converter, Key, Midashi, Minibuffer, Mode, Okuri, Pick, Query, Response, Session,
 };
 
 #[derive(Debug, PartialEq)]
@@ -41,6 +41,7 @@ struct Table {
     generations: Vec<Recorded>,
     registered: Vec<Registered>,
     purged: Vec<Registered>,
+    committed: Vec<(String, String, Pick)>,
 }
 
 fn table(entries: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
@@ -104,6 +105,10 @@ impl Converter for Table {
             words.retain(|w| w != word);
         }
     }
+
+    fn committed(&mut self, midashi: &Midashi, word: &str, pick: Pick) {
+        self.committed.push((midashi.key(), word.to_string(), pick));
+    }
 }
 
 struct Editor<C: Converter = Table> {
@@ -160,6 +165,14 @@ impl<C: Converter> Editor<C> {
             }
         }
         self.last = res;
+    }
+
+    fn flush(&mut self) -> Response {
+        self.session.flush(&mut self.table)
+    }
+
+    fn reset(&mut self) -> Response {
+        self.session.reset(&mut self.table)
     }
 
     fn preedit(&self) -> &str {
@@ -579,7 +592,7 @@ fn 送りありの語を登録する() {
 fn 登録中の_flush_は見出しをかなで確定する() {
     let mut ed = Editor::new(Table::new(&[]));
     ed.type_keys("Rinze<Space>ri");
-    let res = ed.session.flush();
+    let res = ed.flush();
     assert_eq!((res.commit.as_str(), res.minibuffer), ("りんぜ", None));
 }
 
@@ -600,10 +613,10 @@ fn 後退で見出しを削る() {
 fn flush_は表示どおりに確定する() {
     let mut ed = Editor::new(Table::new(&[("あした", &["明日"])]));
     ed.type_keys("Asita<Space>");
-    let res = ed.session.flush();
+    let res = ed.flush();
     assert_eq!((res.commit.as_str(), res.preedit.as_str()), ("明日", ""));
     ed.type_keys("Asi");
-    assert_eq!(ed.session.flush().commit, "あし");
+    assert_eq!(ed.flush().commit, "あし");
 }
 
 #[test]
@@ -910,13 +923,13 @@ fn カタカナモードで送りありの語を登録する() {
 fn flush_はモードを保ち_reset_はひらがなに戻す() {
     let mut ed = Editor::new(Table::new(&[]));
     ed.type_keys("qAsi");
-    let res = ed.session.flush();
+    let res = ed.flush();
     assert_eq!((res.commit.as_str(), res.mode), ("アシ", Mode::Katakana));
     ed.type_keys("l");
-    let res = ed.session.flush();
+    let res = ed.flush();
     assert_eq!((res.mode, res.passthrough), (Mode::Ascii, true));
     ed.type_keys("<C-j>qKa");
-    let res = ed.session.reset();
+    let res = ed.reset();
     assert_eq!(
         (res.commit.as_str(), res.mode, res.preedit.as_str()),
         ("カ", Mode::Hiragana, "")
@@ -1181,6 +1194,7 @@ fn カタカナモードでも英字の見出しを変換でき_確定後はカ�
 #[derive(Default)]
 struct Scripted {
     next: Option<String>,
+    committed: Vec<String>,
 }
 
 impl Converter for Scripted {
@@ -1200,10 +1214,15 @@ impl Converter for Scripted {
     fn register(&mut self, _: &Midashi, _: &str) {}
 
     fn purge(&mut self, _: &Midashi, _: &str) {}
+
+    fn committed(&mut self, midashi: &Midashi, word: &str, _: Pick) {
+        let okuri = midashi.okuri().map_or("", |o| o.kana.as_str());
+        self.committed.push(format!("{word}{okuri}"));
+    }
 }
 
 #[test]
-fn コーパスの打鍵で期待する文になる() {
+fn コーパスの打鍵で期待する文になり_区間ごとに確定を_1_回知らせる() {
     let mut failures = Vec::new();
     for line in include_str!("fixtures/corpus.tsv")
         .lines()
@@ -1212,8 +1231,10 @@ fn コーパスの打鍵で期待する文になる() {
         let (text, keys) = line.split_once('\t').unwrap();
         let mut ed = Editor::new(Scripted::default());
         let mut rest = keys;
+        let mut expects = Vec::new();
         while let Some((before, after)) = rest.split_once('{') {
             let (expect, after) = after.split_once('}').unwrap();
+            expects.push(expect.to_string());
             ed.table.next = Some(expect.to_string());
             ed.type_keys(before);
             if !ed.preedit().starts_with(&format!("▼{expect}")) {
@@ -1222,10 +1243,185 @@ fn コーパスの打鍵で期待する文になる() {
             rest = after;
         }
         ed.type_keys(rest);
-        let flushed = ed.session.flush().commit;
+        let flushed = ed.flush().commit;
         ed.buffer.push_str(&flushed);
         if ed.buffer != text {
             failures.push(format!("{text}: 実際は {}", ed.buffer));
+        }
+        if ed.table.committed != expects {
+            failures.push(format!(
+                "{text}: 確定の通知が {:?} (期待 {expects:?})",
+                ed.table.committed
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+enum Then {
+    Nothing,
+    Flush,
+    Reset,
+}
+
+type Notified = (&'static str, &'static str, Pick);
+
+#[test]
+fn 候補を確定するどの経路でも確定を_1_回知らせる() {
+    use Pick::{First, Other};
+    let entries: &[(&str, &[&str])] = &[
+        ("あした", &["明日", "朝"]),
+        ("あe", &["会", "和"]),
+        ("かんじ", KANJI),
+        ("file", &["ファイル", "フィール"]),
+    ];
+    let cases: &[(&str, &str, Then, &[Notified])] = &[
+        (
+            "Enter",
+            "Asita<Space><CR>",
+            Then::Nothing,
+            &[("あした", "明日", First)],
+        ),
+        (
+            "次の文字",
+            "Asita<Space>ha",
+            Then::Nothing,
+            &[("あした", "明日", First)],
+        ),
+        (
+            "送ってから Enter",
+            "AE<Space><CR>",
+            Then::Nothing,
+            &[("あe", "和", Other)],
+        ),
+        (
+            "送って戻してから確定",
+            "AE<Space>xa",
+            Then::Nothing,
+            &[("あe", "会", First)],
+        ),
+        (
+            "C-j",
+            "Asita<Space><C-j>",
+            Then::Nothing,
+            &[("あした", "明日", First)],
+        ),
+        (
+            "C-q",
+            "Asita<Space><C-q>",
+            Then::Nothing,
+            &[("あした", "明日", First)],
+        ),
+        (
+            "q",
+            "Asita<Space>q",
+            Then::Nothing,
+            &[("あした", "明日", First)],
+        ),
+        (
+            "l",
+            "Asita<Space><Space>l",
+            Then::Nothing,
+            &[("あした", "朝", Other)],
+        ),
+        (
+            "L",
+            "Asita<Space>L",
+            Then::Nothing,
+            &[("あした", "明日", First)],
+        ),
+        (
+            "後退",
+            "Asita<Space><BS>",
+            Then::Nothing,
+            &[("あした", "明日", First)],
+        ),
+        (
+            "一覧から選ぶ",
+            "Kanji<Space><Space><Space><Space><Space>s",
+            Then::Nothing,
+            &[("かんじ", "莞爾", Other)],
+        ),
+        (
+            "flush",
+            "Asita<Space><Space>",
+            Then::Flush,
+            &[("あした", "朝", Other)],
+        ),
+        (
+            "reset",
+            "Asita<Space>",
+            Then::Reset,
+            &[("あした", "明日", First)],
+        ),
+        (
+            "カタカナモード",
+            "qAE<Space><CR>",
+            Then::Nothing,
+            &[("あe", "和", Other)],
+        ),
+        (
+            "abbrev",
+            "/file<Space><Space><CR>",
+            Then::Nothing,
+            &[("file", "フィール", Other)],
+        ),
+        (
+            "辞書登録",
+            "Rinze<Space>凛是<CR>",
+            Then::Nothing,
+            &[("りんぜ", "凛是", Other)],
+        ),
+        (
+            "辞書登録の入力欄での変換",
+            "Rinze<Space>Asita<Space><CR><CR>",
+            Then::Nothing,
+            &[("あした", "明日", First), ("りんぜ", "明日", Other)],
+        ),
+        ("C-g", "Asita<Space><C-g><C-g>", Then::Nothing, &[]),
+        ("x で見出しに戻る", "Asita<Space>x<C-g>", Then::Nothing, &[]),
+        (
+            "辞書から消す",
+            "Asita<Space><Space>Xyes<CR>",
+            Then::Nothing,
+            &[],
+        ),
+        (
+            "消すかを問うている間の flush",
+            "Asita<Space>X",
+            Then::Flush,
+            &[],
+        ),
+        (
+            "一覧の表示中の flush",
+            "Kanji<Space><Space><Space><Space><Space>",
+            Then::Flush,
+            &[],
+        ),
+        ("登録中の flush", "Rinze<Space>", Then::Flush, &[]),
+    ];
+    let mut failures = Vec::new();
+    for (path, keys, then, expected) in cases {
+        let mut ed = Editor::new(Table::new(entries));
+        ed.type_keys(keys);
+        match then {
+            Then::Nothing => {}
+            Then::Flush => {
+                ed.flush();
+            }
+            Then::Reset => {
+                ed.reset();
+            }
+        }
+        let expected: Vec<(String, String, Pick)> = expected
+            .iter()
+            .map(|(key, word, pick)| (key.to_string(), word.to_string(), *pick))
+            .collect();
+        if ed.table.committed != expected {
+            failures.push(format!(
+                "{path}: {:?} (期待 {expected:?})",
+                ed.table.committed
+            ));
         }
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));

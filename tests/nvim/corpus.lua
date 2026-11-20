@@ -1,11 +1,13 @@
-local rinzed, model, dict, socket, user_dict, corpus = unpack(arg)
+local rinzed, model, dict, socket, user_dict, corpus, passes = unpack(arg)
+local learning = { unpack(arg, 8) }
 local root = vim.fn.fnamemodify(debug.getinfo(1, 'S').source:sub(2), ':p:h:h:h')
 vim.opt.runtimepath:prepend(root .. '/nvim')
 vim.cmd.runtime('plugin/rinze.lua')
 vim.o.showmode = false
 
 local rinze = require('rinze')
-rinze.setup({ cmd = { rinzed, '--model', model, '--dict', dict, '--user-dict', user_dict }, socket = socket })
+local cmd = vim.list_extend({ rinzed, '--model', model, '--dict', dict, '--user-dict', user_dict }, learning)
+rinze.setup({ cmd = cmd, socket = socket })
 vim.cmd('RinzeEnable')
 
 local MAX_SPACES = 60
@@ -120,50 +122,67 @@ local function give_up(expect)
   feed(trailing)
 end
 
-local results = {}
-local mismatched = 0
-for i, sentence in ipairs(sentences) do
-  vim.cmd('enew!')
-  typing = coroutine.create(function()
-    for _, segment in ipairs(sentence.segments) do
-      feed(segment.keys)
-      if segment.expect then
-        local spaces, first = convert(segment.expect)
-        table.insert(results, { sentence = i, expect = segment.expect, spaces = spaces, first = first })
-        say('%2d\t%s\t%s\t%s', i, segment.expect, spaces or 'FAIL', first)
-        if not spaces then
-          give_up(segment.expect)
+local function type_corpus(pass)
+  local results = {}
+  local mismatched = 0
+  for i, sentence in ipairs(sentences) do
+    vim.cmd('enew!')
+    typing = coroutine.create(function()
+      for _, segment in ipairs(sentence.segments) do
+        feed(segment.keys)
+        if segment.expect then
+          local spaces, first = convert(segment.expect)
+          table.insert(results, { sentence = i, expect = segment.expect, spaces = spaces, first = first })
+          say('%d周目 %2d\t%s\t%s\t%s', pass, i, segment.expect, spaces or 'FAIL', first)
+          if not spaces then
+            give_up(segment.expect)
+          end
         end
       end
+      vim.api.nvim_feedkeys(vim.keycode('<Esc>'), 'mt', false)
+    end)
+    vim.api.nvim_feedkeys(vim.keycode('i' .. step_key), 'mtx', false)
+    local got = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), '\n')
+    if got ~= sentence.text then
+      mismatched = mismatched + 1
+      say('FAIL 文 %d\n     実際: %s\n     期待: %s', i, got, sentence.text)
     end
-    vim.api.nvim_feedkeys(vim.keycode('<Esc>'), 'mt', false)
-  end)
-  vim.api.nvim_feedkeys(vim.keycode('i' .. step_key), 'mtx', false)
-  local got = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), '\n')
-  if got ~= sentence.text then
-    mismatched = mismatched + 1
-    say('FAIL 文 %d\n     実際: %s\n     期待: %s', i, got, sentence.text)
   end
+  return results, mismatched
 end
 
-local histogram, failed, first_hits = {}, 0, 0
-for _, r in ipairs(results) do
-  if r.spaces then
-    histogram[r.spaces] = (histogram[r.spaces] or 0) + 1
-    if r.spaces == 0 then
-      first_hits = first_hits + 1
+local function summarize(pass, results, mismatched)
+  local histogram, failed, first_hits = {}, 0, 0
+  for _, r in ipairs(results) do
+    if r.spaces then
+      histogram[r.spaces] = (histogram[r.spaces] or 0) + 1
+      if r.spaces == 0 then
+        first_hits = first_hits + 1
+      end
+    else
+      failed = failed + 1
     end
-  else
-    failed = failed + 1
   end
+  say('## %d 周目', pass)
+  say('文: %d (バッファが期待と違う文 %d)', #sentences, mismatched)
+  say('変換した区間: %d', #results)
+  say('1 位正解率: %d/%d = %.1f%%', first_hits, #results, 100 * first_hits / #results)
+  local spaces = vim.tbl_keys(histogram)
+  table.sort(spaces)
+  for _, n in ipairs(spaces) do
+    say('Space %d 回: %d', n, histogram[n])
+  end
+  say('届かなかった: %d', failed)
 end
-say('文: %d (バッファが期待と違う文 %d)', #sentences, mismatched)
-say('変換した区間: %d', #results)
-say('1 位正解率: %d/%d = %.1f%%', first_hits, #results, 100 * first_hits / #results)
-local spaces = vim.tbl_keys(histogram)
-table.sort(spaces)
-for _, n in ipairs(spaces) do
-  say('Space %d 回: %d', n, histogram[n])
+
+local summaries = {}
+local any_mismatched = false
+for pass = 1, tonumber(passes) do
+  local results, mismatched = type_corpus(pass)
+  table.insert(summaries, { results, mismatched })
+  any_mismatched = any_mismatched or mismatched > 0
 end
-say('届かなかった: %d', failed)
-os.exit(mismatched > 0 and 1 or 0)
+for pass, s in ipairs(summaries) do
+  summarize(pass, s[1], s[2])
+end
+os.exit(any_mismatched and 1 or 0)

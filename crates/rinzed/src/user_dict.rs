@@ -1,11 +1,12 @@
 //! ユーザー辞書。SKK 辞書と同じ書式の UTF-8 のテキストで、書き込むのは rinzed だけ。
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::io;
+use std::path::PathBuf;
 
 use rinze_dict::{Dictionary, Section};
 use rinze_engine::Midashi;
+
+use crate::file;
 
 #[derive(Debug)]
 pub struct UserDictionary {
@@ -22,7 +23,7 @@ enum Storage {
 impl UserDictionary {
     /// ファイルが無ければ空の辞書として始め、最初の登録で作る。
     pub fn open(path: PathBuf) -> io::Result<Self> {
-        let text = read_or_empty(&path)?;
+        let text = file::read_or_empty(&path)?;
         Ok(Self {
             dict: Dictionary::parse(&text),
             storage: Storage::File(path),
@@ -73,64 +74,17 @@ impl UserDictionary {
                 *text = edit(text)?;
                 text.clone()
             }
-            Storage::File(path) => {
-                let (_lock, latest) = lock_and_read(path)?;
-                let text = edit(&latest)?;
-                if text != latest {
-                    write_atomically(path, text.as_bytes())?;
-                }
-                text
-            }
+            Storage::File(path) => file::rewrite(path, edit)?,
         };
         self.dict = Dictionary::parse(&text);
         Ok(())
     }
 }
 
-fn lock_and_read(path: &Path) -> io::Result<(File, String)> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    // ファイル本体は rename で差し替わるので、ロックは別のファイルで取る
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(with_suffix(path, ".lock"))?;
-    lock.lock()?;
-    let text = read_or_empty(path)?;
-    Ok((lock, text))
-}
-
-fn read_or_empty(path: &Path) -> io::Result<String> {
-    match fs::read(path) {
-        Ok(bytes) => Ok(rinze_dict::decode(&bytes).into_owned()),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(String::new()),
-        Err(e) => Err(e),
-    }
-}
-
-fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let tmp = with_suffix(path, &format!(".tmp.{}", std::process::id()));
-    let mut file = File::create(&tmp)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    fs::rename(&tmp, path)?;
-    if let Some(dir) = path.parent() {
-        // rename 自体を永続化する
-        File::open(dir)?.sync_all()?;
-    }
-    Ok(())
-}
-
-fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
-    let mut s = path.as_os_str().to_owned();
-    s.push(suffix);
-    PathBuf::from(s)
-}
-
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use rinze_engine::Okuri;
 
     use super::*;

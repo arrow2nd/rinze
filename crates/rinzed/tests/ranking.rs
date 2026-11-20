@@ -1,8 +1,8 @@
 use rinze_dict::Dictionary;
 use rinze_engine::{Midashi, Okuri, Query};
 use rinze_zenz::{Model, Zenz};
-use rinzed::Backend;
 use rinzed::user_dict::UserDictionary;
+use rinzed::{Backend, Learning};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -27,6 +27,7 @@ fn 試作と同じ順位に並べる() {
         Dictionary::from_bytes(&std::fs::read(dict).unwrap()),
         UserDictionary::in_memory(),
         Zenz::new(&model, 8).unwrap(),
+        Learning::Off,
     );
     let cases: Vec<Case> =
         serde_json::from_str(include_str!("fixtures/spike_ranking.json")).unwrap();

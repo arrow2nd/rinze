@@ -11,15 +11,19 @@
 //! `minibuffer` は辞書登録の入力欄か辞書から消すかの問いがあるときだけ `{prompt, text, preedit}` で、それ以外は nil。
 //! `mode` は `hiragana` `katakana` `halfwidth-katakana` `ascii` `fullwidth-latin` のどれか。
 
+mod file;
+pub mod history;
+pub mod learning;
 pub mod user_dict;
 
 use std::io::{BufReader, BufWriter, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use history::History;
 use rinze_dict::Dictionary;
-use rinze_engine::{Converter, Key, Midashi, Mode, Query, Response, Session};
+use rinze_engine::{Converter, Key, Midashi, Mode, Pick, Query, Response, Session};
 use rinze_zenz::Zenz;
 use rmpv::Value;
 use user_dict::UserDictionary;
@@ -48,6 +52,12 @@ pub struct Backend<'m> {
     pub dict: Dictionary,
     pub user: Mutex<UserDictionary>,
     pub zenz: Mutex<Zenz<'m>>,
+    pub learning: Learning,
+}
+
+pub enum Learning {
+    Off,
+    On(Mutex<History>),
 }
 
 /// ユーザー辞書の候補にシステム辞書の候補を続け、重複を 1 つにまとめる。
@@ -101,11 +111,12 @@ fn hiragana(c: char) -> Option<char> {
 }
 
 impl<'m> Backend<'m> {
-    pub fn new(dict: Dictionary, user: UserDictionary, zenz: Zenz<'m>) -> Self {
+    pub fn new(dict: Dictionary, user: UserDictionary, zenz: Zenz<'m>, learning: Learning) -> Self {
         Self {
             dict,
             user: Mutex::new(user),
             zenz: Mutex::new(zenz),
+            learning,
         }
     }
 
@@ -113,40 +124,63 @@ impl<'m> Backend<'m> {
         self.zenz.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn user(&self) -> std::sync::MutexGuard<'_, UserDictionary> {
+    pub fn user(&self) -> std::sync::MutexGuard<'_, UserDictionary> {
         self.user.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// 候補が 2 件以上あれば zenz の点数で並べ替える。abbrev の候補は辞書の順のまま返す。
+    fn history(&self) -> Option<std::sync::MutexGuard<'_, History>> {
+        match &self.learning {
+            Learning::Off => None,
+            Learning::On(history) => Some(history.lock().unwrap_or_else(|e| e.into_inner())),
+        }
+    }
+
+    /// 候補が 2 件以上あれば zenz の点数に学習の加点を足して並べ替える。abbrev の候補は辞書の順に、学習の加点だけで並べ替える。
     pub fn candidates(&self, query: &Query) -> Vec<String> {
         let words = lookup(&self.dict, &self.user(), query.midashi);
-        let Midashi::Kana { reading, okuri } = query.midashi else {
-            return words;
-        };
         if words.len() < 2 {
             return words;
         }
-        let okuri = okuri.as_ref().map_or("", |o| o.kana.as_str());
-        let surfaces: Vec<String> = words.iter().map(|w| format!("{w}{okuri}")).collect();
-        let reading = format!("{reading}{okuri}");
+        let key = query.midashi.key();
+        let choices = self
+            .history()
+            .map_or_else(Vec::new, |h| h.choices(&key).to_vec());
+        let bonus = |word: &str| learning::bonus(&choices, word, query.left_context);
+        if let Midashi::Abbrev(_) = query.midashi {
+            let unscored = vec![0.0; words.len()];
+            return learning::rank(words, &unscored, bonus);
+        }
         let started = Instant::now();
-        let scores = self.zenz().score(query.left_context, &reading, &surfaces);
-        match scores {
+        match self.score(query.left_context, query.midashi, &words) {
             Ok(scores) => {
                 log!(
-                    "rinzed: {reading} {} 件 {:.1}ms",
+                    "rinzed: {key} {} 件 {:.1}ms",
                     words.len(),
                     started.elapsed().as_secs_f64() * 1e3
                 );
-                let mut order: Vec<usize> = (0..words.len()).collect();
-                order.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));
-                order.into_iter().map(|i| words[i].clone()).collect()
+                learning::rank(words, &scores, bonus)
             }
             Err(e) => {
-                log!("rinzed: {reading} の点数づけに失敗したので辞書の順で返す: {e}");
+                log!("rinzed: {key} の点数づけに失敗したので辞書の順で返す: {e}");
                 words
             }
         }
+    }
+
+    /// 送りがなを含めた表記の、左文脈に対する対数尤度を `words` と同じ順で返す。
+    pub fn score(
+        &self,
+        left_context: &str,
+        midashi: &Midashi,
+        words: &[String],
+    ) -> rinze_zenz::Result<Vec<f64>> {
+        let Midashi::Kana { reading, okuri } = midashi else {
+            return Err("abbrev の見出しは読みが無いので点数をつけない".into());
+        };
+        let okuri = okuri.as_ref().map_or("", |o| o.kana.as_str());
+        let surfaces: Vec<String> = words.iter().map(|w| format!("{w}{okuri}")).collect();
+        self.zenz()
+            .score(left_context, &format!("{reading}{okuri}"), &surfaces)
     }
 
     /// zenz が生成した表記のうち、読みと送りがなに対応するものを良い順に返す。読みと同じひらがなの表記は除く。
@@ -216,7 +250,42 @@ impl<'m> Backend<'m> {
             Ok(false) => log!("rinzed: {key} /{word}/ はユーザー辞書に無い"),
             Err(e) => log!("rinzed: {key} /{word}/ を消せなかった: {e}"),
         }
+        if let Some(mut history) = self.history() {
+            match history.forget(&key, word) {
+                Ok(true) => log!("rinzed: {key} /{word}/ を学習の履歴から消した"),
+                Ok(false) => {}
+                Err(e) => log!("rinzed: {key} /{word}/ を学習の履歴から消せなかった: {e}"),
+            }
+        }
     }
+
+    /// 最初に出した候補をそのまま確定したときと、辞書の候補でない語 (生成した表記) は、並べ替えに使わないので記録しない。
+    pub fn committed(&self, midashi: &Midashi, word: &str, pick: Pick) {
+        if pick == Pick::First || matches!(self.learning, Learning::Off) {
+            return;
+        }
+        let in_dictionary = lookup(&self.dict, &self.user(), midashi)
+            .iter()
+            .any(|w| w == word);
+        let Some(mut history) = self.history().filter(|_| in_dictionary) else {
+            return;
+        };
+        let key = midashi.key();
+        let started = Instant::now();
+        match history.record(&key, word, now_millis()) {
+            Ok(()) => log!(
+                "rinzed: {key} /{word}/ を学習の履歴に書いた {:.1}ms",
+                started.elapsed().as_secs_f64() * 1e3
+            ),
+            Err(e) => log!("rinzed: {key} /{word}/ を学習の履歴に書けなかった: {e}"),
+        }
+    }
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 struct SharedConverter<'a, 'm>(&'a Backend<'m>);
@@ -236,6 +305,10 @@ impl Converter for SharedConverter<'_, '_> {
 
     fn purge(&mut self, midashi: &Midashi, word: &str) {
         self.0.purge(midashi, word)
+    }
+
+    fn committed(&mut self, midashi: &Midashi, word: &str, pick: Pick) {
+        self.0.committed(midashi, word, pick)
     }
 }
 
@@ -292,8 +365,8 @@ fn dispatch(
             let left = left.as_str().unwrap_or("");
             Ok(session.handle(key, left, &mut SharedConverter(backend)))
         }
-        "flush" => Ok(session.flush()),
-        "reset" => Ok(session.reset()),
+        "flush" => Ok(session.flush(&mut SharedConverter(backend))),
+        "reset" => Ok(session.reset(&mut SharedConverter(backend))),
         _ => Err(format!("未知のメソッド: {method}")),
     }
 }
