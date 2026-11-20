@@ -19,7 +19,6 @@
 
 use std::collections::HashMap;
 
-use rinze_dict::Dictionary;
 use rinze_engine::{Converter, Key, Midashi, Okuri, Pick, Query, Session};
 use rinze_zenz::{Model, Zenz};
 use rinzed::learning::{self, Choice};
@@ -544,7 +543,10 @@ fn print_detail(config: Config, pairs: &[(&Scene, &Scene)], learn: &[&Scene], co
 fn main() {
     let model = Model::load(std::env::var("RINZE_MODEL").unwrap().as_ref()).unwrap();
     let backend = Backend::new(
-        Dictionary::from_bytes(&std::fs::read(std::env::var("RINZE_DICT").unwrap()).unwrap()),
+        rinzed::load_dictionaries(std::env::split_paths(
+            &std::env::var_os("RINZE_DICT").unwrap(),
+        ))
+        .unwrap(),
         UserDictionary::in_memory(),
         Zenz::new(&model, 8).unwrap(),
         Learning::Off,

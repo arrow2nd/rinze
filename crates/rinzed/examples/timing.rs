@@ -1,6 +1,5 @@
 use std::time::Instant;
 
-use rinze_dict::Dictionary;
 use rinze_engine::{Midashi, Okuri, Query};
 use rinze_zenz::{Model, Zenz};
 use rinzed::user_dict::UserDictionary;
@@ -59,7 +58,10 @@ fn main() {
     let runs: usize = std::env::args().nth(1).map_or(11, |s| s.parse().unwrap());
     let model = Model::load(std::env::var("RINZE_MODEL").unwrap().as_ref()).unwrap();
     let backend = Backend::new(
-        Dictionary::from_bytes(&std::fs::read(std::env::var("RINZE_DICT").unwrap()).unwrap()),
+        rinzed::load_dictionaries(std::env::split_paths(
+            &std::env::var_os("RINZE_DICT").unwrap(),
+        ))
+        .unwrap(),
         UserDictionary::in_memory(),
         Zenz::new(&model, 8).unwrap(),
         Learning::Off,

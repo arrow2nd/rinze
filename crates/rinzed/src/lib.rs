@@ -1,4 +1,4 @@
-//! 常駐プロセス。辞書と zenz を 1 つずつ持ち、接続ごとに [`Session`] を作って msgpack-rpc で応答する。
+//! 常駐プロセス。システム辞書 (複数を合わせたもの) と zenz を 1 つずつ持ち、接続ごとに [`Session`] を作って msgpack-rpc で応答する。
 //!
 //! メソッド:
 //! - `key(key: string, left_context: string) -> response`
@@ -23,6 +23,7 @@ pub mod user_dict;
 
 use std::io::{BufReader, BufWriter, Write};
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -75,6 +76,24 @@ struct Scored {
 pub enum Learning {
     Off,
     On(Mutex<History>),
+}
+
+/// システム辞書を渡した順に読み、同じ見出しの候補を先の辞書の候補のあとに重複なく続けた 1 つの辞書にする。
+pub fn load_dictionaries<P: AsRef<Path>>(
+    paths: impl IntoIterator<Item = P>,
+) -> Result<Dictionary, String> {
+    let mut merged: Option<Dictionary> = None;
+    for path in paths {
+        let path = path.as_ref();
+        let dict = Dictionary::from_bytes(
+            &std::fs::read(path).map_err(|e| format!("辞書 {} を読めない: {e}", path.display()))?,
+        );
+        match &mut merged {
+            Some(merged) => merged.merge(dict),
+            None => merged = Some(dict),
+        }
+    }
+    Ok(merged.unwrap_or_default())
 }
 
 /// ユーザー辞書の候補にシステム辞書の候補を続け、重複を 1 つにまとめる。ユーザー辞書で外した語はシステム辞書から取らない。

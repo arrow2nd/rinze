@@ -41,6 +41,26 @@ impl Dictionary {
         dict
     }
 
+    /// 同じ見出しの `later` の候補を、この辞書の候補のあとに重複なく続ける。重複した語の書き方 (注釈) はこの辞書のものを残す。
+    pub fn merge(&mut self, later: Dictionary) {
+        for (key, written) in later.written_candidates {
+            let merged = self.written_candidates.entry(key).or_default();
+            for item in written {
+                if !merged.iter().any(|w| word_of(w) == word_of(&item)) {
+                    merged.push(item);
+                }
+            }
+        }
+        for (key, words) in later.ignored {
+            let merged = self.ignored.entry(key).or_default();
+            for word in words {
+                if !merged.contains(&word) {
+                    merged.push(word);
+                }
+            }
+        }
+    }
+
     /// 見出しの候補を辞書の順に、注釈を除いて返す。
     pub fn lookup(&self, key: &str) -> impl Iterator<Item = &str> {
         self.written_candidates
@@ -345,6 +365,23 @@ mod tests {
         assert_eq!(words(&dict, "あt"), ["合", "会", "遭"]);
         assert_eq!(words(&dict, "あした"), ["明日", "朝"]);
         assert!(words(&dict, "ない").is_empty());
+    }
+
+    #[test]
+    fn 辞書を合わせると同じ見出しの候補を渡した順に重複なく並べる() {
+        let mut dict = Dictionary::parse("たなか /田中;姓/田仲;姓/\nあした /明日/\n");
+        dict.merge(Dictionary::parse(
+            "たなか /田中;人名/多中/\nしんじゅく /新宿/\nあした /(skk-ignore-dic-word \"朝\")/\n",
+        ));
+        dict.merge(Dictionary::parse("たなか /田中町/多中/\n"));
+        assert_eq!(words(&dict, "たなか"), ["田中", "田仲", "多中", "田中町"]);
+        assert_eq!(words(&dict, "しんじゅく"), ["新宿"]);
+        assert_eq!(
+            dict.written("たなか", "田中"),
+            Some("田中;姓"),
+            "重複した語は先の辞書の書き方を残す"
+        );
+        assert_eq!(dict.ignored("あした"), ["朝"]);
     }
 
     #[test]

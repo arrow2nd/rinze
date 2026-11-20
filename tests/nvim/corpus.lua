@@ -6,7 +6,11 @@ vim.cmd.runtime('plugin/rinze.lua')
 vim.o.showmode = false
 
 local rinze = require('rinze')
-local cmd = vim.list_extend({ rinzed, '--model', model, '--dict', dict, '--user-dict', user_dict }, learning)
+local cmd = { rinzed, '--model', model, '--user-dict', user_dict }
+for _, path in ipairs(vim.split(dict, ':', { plain = true })) do
+  vim.list_extend(cmd, { '--dict', path })
+end
+vim.list_extend(cmd, learning)
 rinze.setup({ cmd = cmd, socket = socket })
 vim.cmd('RinzeEnable')
 

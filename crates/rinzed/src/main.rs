@@ -6,13 +6,16 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Mutex;
 
-use rinze_dict::Dictionary;
 use rinze_zenz::{Model, Zenz};
 use rinzed::history::History;
 use rinzed::user_dict::UserDictionary;
 use rinzed::{Backend, Learning, log};
 
-const USAGE: &str = "使い方: rinzed --model <zenz の gguf> --dict <SKK 辞書> [--socket <パス>] [--user-dict <パス>] [--history <パス> | --no-learning] [--threads <数>]";
+const USAGE: &str = "使い方: rinzed [--model <zenz の gguf>] [--dict <SKK 辞書>]... [--socket <パス>] [--user-dict <パス>] [--history <パス> | --no-learning] [--threads <数>]
+  --model を省くと環境変数 RINZED_DEFAULT_MODEL のモデルを、--dict を 1 つも渡さないと RINZED_DEFAULT_DICTS (: 区切り) の辞書を使う";
+
+const DEFAULT_MODEL_ENV: &str = "RINZED_DEFAULT_MODEL";
+const DEFAULT_DICTS_ENV: &str = "RINZED_DEFAULT_DICTS";
 
 /// `sockaddr_un.sun_path` の大きさ。パスは終端の NUL を含めてここに収まらなければならない。
 #[cfg(target_os = "macos")]
@@ -23,29 +26,35 @@ const SUN_PATH_LEN: usize = 108;
 const DEFAULT_THREADS_WHEN_UNKNOWN: usize = 4;
 const DEFAULT_THREADS_CAP: usize = 8;
 
+#[derive(Debug, PartialEq)]
 struct Args {
     model: PathBuf,
-    dict: PathBuf,
+    dicts: Vec<PathBuf>,
     socket: PathBuf,
     user_dict: PathBuf,
     learning: LearningArg,
     threads: i32,
 }
 
+#[derive(Debug, PartialEq)]
 enum LearningArg {
     Off,
     History(PathBuf),
 }
 
-fn parse_args() -> Result<Args, String> {
+fn parse_args(
+    args: impl IntoIterator<Item = String>,
+    env: impl Fn(&str) -> Option<OsString>,
+) -> Result<Args, String> {
+    let env = |name: &str| env(name).filter(|value| !value.is_empty());
     let mut model = None;
-    let mut dict = None;
+    let mut dicts = Vec::new();
     let mut socket = None;
     let mut user_dict = None;
     let mut history = None;
     let mut no_learning = false;
     let mut threads = None;
-    let mut it = std::env::args().skip(1);
+    let mut it = args.into_iter();
     while let Some(flag) = it.next() {
         if flag == "--no-learning" {
             no_learning = true;
@@ -54,7 +63,7 @@ fn parse_args() -> Result<Args, String> {
         let value = it.next().ok_or_else(|| format!("{flag} に値がない"))?;
         match flag.as_str() {
             "--model" => model = Some(PathBuf::from(value)),
-            "--dict" => dict = Some(PathBuf::from(value)),
+            "--dict" => dicts.push(PathBuf::from(value)),
             "--socket" => socket = Some(PathBuf::from(value)),
             "--user-dict" => user_dict = Some(PathBuf::from(value)),
             "--history" => history = Some(PathBuf::from(value)),
@@ -68,9 +77,19 @@ fn parse_args() -> Result<Args, String> {
             _ => return Err(format!("未知の引数: {flag}")),
         }
     }
+    if dicts.is_empty() {
+        dicts = env(DEFAULT_DICTS_ENV)
+            .map(|paths| std::env::split_paths(&paths).collect())
+            .unwrap_or_default();
+    }
+    if dicts.is_empty() {
+        return Err(format!("--dict が必要 ({DEFAULT_DICTS_ENV} も無い)"));
+    }
     Ok(Args {
-        model: model.ok_or("--model が必要")?,
-        dict: dict.ok_or("--dict が必要")?,
+        model: model
+            .or_else(|| env(DEFAULT_MODEL_ENV).map(PathBuf::from))
+            .ok_or_else(|| format!("--model が必要 ({DEFAULT_MODEL_ENV} も無い)"))?,
+        dicts,
         socket: socket.map_or_else(default_socket, Ok)?,
         user_dict: user_dict.map_or_else(default_user_dict, Ok)?,
         learning: match (no_learning, history) {
@@ -195,7 +214,7 @@ fn lock_socket(socket: &Path) -> Result<Option<File>, String> {
 struct AnotherRinzedServes;
 
 fn main() -> ExitCode {
-    let args = match parse_args() {
+    let args = match parse_args(std::env::args().skip(1), |name| std::env::var_os(name)) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("{e}\n{USAGE}");
@@ -225,10 +244,7 @@ fn start(args: Args) -> Result<AnotherRinzedServes, Box<dyn std::error::Error>> 
         return Ok(AnotherRinzedServes);
     };
 
-    let dict = Dictionary::from_bytes(
-        &std::fs::read(&args.dict)
-            .map_err(|e| format!("辞書 {} を読めない: {e}", args.dict.display()))?,
-    );
+    let dict = rinzed::load_dictionaries(&args.dicts)?;
     let user = UserDictionary::open(args.user_dict.clone())
         .map_err(|e| format!("ユーザー辞書 {} を読めない: {e}", args.user_dict.display()))?;
     let (learning, learning_note) = match &args.learning {
@@ -248,7 +264,13 @@ fn start(args: Args) -> Result<AnotherRinzedServes, Box<dyn std::error::Error>> 
     let backend: &'static Backend<'static> =
         Box::leak(Box::new(Backend::new(dict, user, zenz, learning)));
 
-    let note = format!("ユーザー辞書 {}、{learning_note}", args.user_dict.display());
+    let dicts: Vec<String> = args.dicts.iter().map(|d| d.display().to_string()).collect();
+    let note = format!(
+        "モデル {}、辞書 {}、ユーザー辞書 {}、{learning_note}",
+        args.model.display(),
+        dicts.join(" "),
+        args.user_dict.display()
+    );
     match serve_on(&args.socket, &note, backend)? {}
 }
 
@@ -281,7 +303,55 @@ mod tests {
     use std::ffi::OsString;
     use std::path::PathBuf;
 
-    use super::{Os, socket_path};
+    use super::{Args, LearningArg, Os, parse_args, socket_path};
+
+    fn parse(args: &[&str], env: &[(&str, &str)]) -> Result<Args, String> {
+        let fixed = ["--socket", "/s", "--user-dict", "/u", "--no-learning"];
+        parse_args(args.iter().chain(&fixed).map(|a| a.to_string()), |name| {
+            env.iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| OsString::from(v))
+        })
+    }
+
+    #[test]
+    fn 辞書は渡した順に複数受け取る() {
+        let args = parse(
+            &["--model", "/m.gguf", "--dict", "/L", "--dict", "/jinmei"],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(args.model, PathBuf::from("/m.gguf"));
+        assert_eq!(args.dicts, [PathBuf::from("/L"), PathBuf::from("/jinmei")]);
+        assert_eq!(args.learning, LearningArg::Off);
+    }
+
+    #[test]
+    fn モデルと辞書を省くと環境変数の既定値を使い_引数があれば引数を使う() {
+        let env = [
+            ("RINZED_DEFAULT_MODEL", "/store/zenz.gguf"),
+            ("RINZED_DEFAULT_DICTS", "/store/L:/store/geo"),
+        ];
+        let defaults = parse(&[], &env).unwrap();
+        assert_eq!(defaults.model, PathBuf::from("/store/zenz.gguf"));
+        assert_eq!(
+            defaults.dicts,
+            [PathBuf::from("/store/L"), PathBuf::from("/store/geo")]
+        );
+        let given = parse(&["--model", "/m.gguf", "--dict", "/mine"], &env).unwrap();
+        assert_eq!(given.model, PathBuf::from("/m.gguf"));
+        assert_eq!(
+            given.dicts,
+            [PathBuf::from("/mine")],
+            "--dict を渡せば既定の辞書は使わない"
+        );
+    }
+
+    #[test]
+    fn モデルか辞書が引数にも環境変数にも無ければ起動しない() {
+        assert!(parse(&["--dict", "/L"], &[]).is_err());
+        assert!(parse(&["--model", "/m.gguf"], &[("RINZED_DEFAULT_DICTS", "")]).is_err());
+    }
 
     #[derive(serde::Deserialize)]
     struct Case {

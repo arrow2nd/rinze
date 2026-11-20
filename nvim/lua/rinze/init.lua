@@ -1,8 +1,9 @@
 local M = {}
 
 local config = {
-  -- 接続できなかったときに起動するコマンド。`--socket` は自動で足す
-  cmd = nil,
+  -- 接続できなかったときに起動するコマンド。`--socket` は自動で足す。
+  -- flake の rinzed はモデルと辞書の既定値を持つので、PATH にあれば引数は要らない
+  cmd = { 'rinzed' },
   socket = nil,
   startup_timeout = 30000,
   -- true なら見出しの入力中に変換候補を blink.cmp のメニューに出す
@@ -60,8 +61,8 @@ local function connect()
   local path = socket_path()
   local chan = try_connect(path)
   if not chan then
-    if not config.cmd then
-      error('rinze: ' .. path .. ' に接続できず、起動コマンド (cmd) も設定されていない')
+    if vim.fn.executable(config.cmd[1]) ~= 1 then
+      error('rinze: ' .. path .. ' に接続できず、起動コマンド ' .. config.cmd[1] .. ' も見つからない (setup の cmd で指定する)')
     end
     local cmd = vim.list_extend(vim.deepcopy(config.cmd), { '--socket', path })
     local exit_code, stderr = nil, {}

@@ -3,7 +3,6 @@
 //!
 //! `RINZE_MODEL=... RINZE_DICT=... cargo run --release -p rinzed --example abbrev_ranking`
 
-use rinze_dict::Dictionary;
 use rinze_zenz::{Model, Zenz};
 
 const CASES: &[(&str, &str, &str)] = &[
@@ -48,8 +47,10 @@ fn rank(words: &[String], expected: &str) -> Option<usize> {
 
 fn main() {
     let model = Model::load(std::env::var("RINZE_MODEL").unwrap().as_ref()).unwrap();
-    let dict =
-        Dictionary::from_bytes(&std::fs::read(std::env::var("RINZE_DICT").unwrap()).unwrap());
+    let dict = rinzed::load_dictionaries(std::env::split_paths(
+        &std::env::var_os("RINZE_DICT").unwrap(),
+    ))
+    .unwrap();
     let mut zenz = Zenz::new(&model, 8).unwrap();
     let (mut dict_top, mut zenz_top) = (0, 0);
     println!("左文脈\t見出し\t期待\t辞書の順位\tzenz の順位\tzenz の順");

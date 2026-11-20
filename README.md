@@ -7,6 +7,117 @@ SKK 方式の IME。打ち方は SKK と同じで、変換候補の順位を「�
 
 入力モードは SKK と同じく、ひらがな、カタカナ、半角カナ、全角英字、ASCII の 5 つがある。フロントエンドは今は Neovim だけがある。
 
+## 入れ方
+
+flake から rinzed、zenz のモデル、SKK 辞書、Neovim プラグインを入れる。flake の `rinzed` はモデルと辞書の既定値を持つので、PATH に入れればプラグインは引数なしで起動できる。
+
+### 試す
+
+```sh
+nix run /path/to/rinze#demo
+```
+
+`--clean` の Neovim に rinze と blink.cmp を設定して起動し、rinze を有効にした状態で挿入モードに入る。`Asita` で blink.cmp のメニューに候補が出て、Space で変換、`C-y` でメニューの候補を確定、`C-l` でオンオフを切り替える。
+ソケット、ユーザー辞書、学習の履歴、Neovim と blink.cmp の状態は `/tmp/rinze-demo-*` に置き、終了すると rinzed を止めてディレクトリごと消す。利用者のユーザー辞書、履歴、既定のソケットには触れない。
+
+### flake の出力
+
+| 出力 | 中身 |
+| --- | --- |
+| `packages.<system>.rinzed` (`default`) | モデルと辞書の既定値を持つ rinzed。`rinzed-unwrapped` のラッパー |
+| `packages.<system>.rinzed-unwrapped` | 既定値を持たない rinzed |
+| `packages.<system>.rinze-zenz-model` | zenz-v3.2-small の GGUF ([モデルと辞書](#モデルと辞書)) |
+| `packages.<system>.rinze-dictionaries` | 既定の SKK 辞書を `share/skk` にまとめたもの |
+| `packages.<system>.rinze-nvim` | Neovim プラグイン (`vimUtils.buildVimPlugin`) |
+| `packages.<system>.demo`、`apps.<system>.demo` | 上の試用の入口 |
+| `overlays.default` | 上の `rinzed`、`rinzed-unwrapped`、`rinze-zenz-model`、`rinze-nvim` を pkgs に足す |
+| `checks.<system>` | rinzed とプラグインのビルド、既定のソケットのパスの一致 (Lua 側)、`setup` に何も渡さずに PATH の rinzed を起動して候補を引けること |
+
+system は `x86_64-linux`、`aarch64-linux`、`aarch64-darwin`。バイナリキャッシュは無いので、rinzed は手元で llama.cpp ごとビルドする。
+
+#### 既定値の渡し方
+
+`rinzed` は `rinzed-unwrapped` を `makeBinaryWrapper` で包み、環境変数 `RINZED_DEFAULT_MODEL` にモデルのパスを、`RINZED_DEFAULT_DICTS` に辞書のパスを `:` 区切りで入れる (`--set-default` なので、起動時の環境にあればそちらを使う)。
+rinzed は `--model` を省くと `RINZED_DEFAULT_MODEL` を、`--dict` を 1 つも渡さないと `RINZED_DEFAULT_DICTS` を使う。`--dict` を 1 つでも渡すと既定の辞書は使わない。
+
+既定の辞書を変えるには `override` で `dictionaries` を渡す。辞書のパッケージ (`share/skk` の下の辞書をすべて使う) と辞書のファイルを混ぜて並べられ、並べた順が[複数の辞書](#複数の辞書)の順になる。
+
+```nix
+rinzed.override {
+  dictionaries = rinzed.dictionaries ++ [ ./skk-jisyo.imas.utf8 ];
+  # model = ...;
+}
+```
+
+### home-manager と lazy.nvim
+
+Neovim の設定を Nix の外 (out-of-store symlink など) に置き、lazy.nvim でプラグインを管理している場合の入れ方。home-manager でプラグインを決まった場所に置き、lazy.nvim の `dir` で読む。
+lazy.nvim は既定で runtimepath と packpath を作り直すので、`pack/*/start` に置いたプラグインは読まれない。
+
+```nix
+# flake.nix の inputs
+rinze.url = "git+file:///path/to/rinze";
+```
+
+```nix
+# home-manager のモジュール
+{ inputs, pkgs, ... }:
+let
+  rinze = inputs.rinze.packages.${pkgs.stdenv.hostPlatform.system};
+in
+{
+  home.packages = [ rinze.rinzed ];
+  xdg.dataFile."nvim/rinze".source = rinze.rinze-nvim;
+}
+```
+
+```lua
+-- lazy.nvim のプラグインの一覧
+{
+  dir = vim.fn.stdpath("data") .. "/rinze",
+  name = "rinze",
+  config = function()
+    require("rinze").setup({ blink = true })
+    vim.keymap.set("i", "<C-l>", function() require("rinze").toggle() end)
+  end,
+},
+```
+
+`inputs.rinze.inputs.nixpkgs.follows` で nixpkgs を揃えると、rinzed をビルドするコンパイラも変わる。[複数の辞書](#複数の辞書)などの測定の数字は rinze の `flake.lock` の nixpkgs で出したもの。nixos-26.05 (`6dadaf43`) に揃えてビルドした rinzed でも、コーパスの全区間の結果は同じだった。
+
+### overlay を使う (NixOS、nix-darwin、home-manager の programs.neovim)
+
+```nix
+nixpkgs.overlays = [ inputs.rinze.overlays.default ];
+```
+
+```nix
+# home-manager
+programs.neovim = {
+  enable = true;
+  extraPackages = [ pkgs.rinzed ];
+  plugins = [ pkgs.rinze-nvim ];
+  initLua = ''
+    require('rinze').setup({})
+    vim.keymap.set('i', '<C-l>', function() require('rinze').toggle() end)
+  '';
+};
+```
+
+`extraPackages` は Neovim の PATH だけに rinzed を足す。端末から rinzed を使わないならこれで足りる。
+
+### nixvim
+
+```nix
+programs.nixvim = {
+  extraPlugins = [ pkgs.rinze-nvim ];
+  extraPackages = [ pkgs.rinzed ];
+  extraConfigLua = ''
+    require('rinze').setup({})
+  '';
+};
+```
+
 ## 構成
 
 | crate | 役割 |
@@ -14,7 +125,7 @@ SKK 方式の IME。打ち方は SKK と同じで、変換候補の順位を「�
 | `rinze-engine` | 入力の状態機械。入力モード、ローマ字の解釈、▽ / ▼ の状態、abbrev、候補の送り、見出しの入力中の候補の選択、辞書登録 (入れ子を含む)、辞書から消すかの問いを持つ。入出力を持たず、候補の取得、登録した語の保存と削除、確定した候補の通知は `Converter` trait に任せる |
 | `rinze-dict` | SKK 辞書の読み込みと見出しの検索、SKK 辞書のテキストへの語の追加と削除 (`skk-ignore-dic-word` での除外を含む) |
 | `rinze-zenz` | zenz による候補の点数づけと、ビーム探索による表記の生成 |
-| `rinzed` | 常駐プロセス。辞書、ユーザー辞書、学習の履歴、zenz を 1 つずつ持ち、Unix ドメインソケットで msgpack-rpc を受ける。上の 3 つを繋ぐ唯一の場所で、ユーザー辞書と学習の履歴を書くのも rinzed だけ |
+| `rinzed` | 常駐プロセス。システム辞書 (複数を合わせたもの)、ユーザー辞書、学習の履歴、zenz を 1 つずつ持ち、Unix ドメインソケットで msgpack-rpc を受ける。上の 3 つを繋ぐ唯一の場所で、ユーザー辞書と学習の履歴を書くのも rinzed だけ |
 
 フロントエンドは接続ごとに独立した入力状態を持ち、入力モードもその一部として rinzed が持つ。フロントエンドはモードを判断せず、キーを送って応答を表示する。Neovim のプラグインは `nvim/` にある。
 
@@ -191,7 +302,8 @@ NixOS / nix で `nix develop` に入ると、cargo、llama.cpp のビルドに�
 ```sh
 nix develop
 cargo test --workspace           # モデルの要らないテスト
-nix build                        # result/bin/rinzed
+nix build                        # result/bin/rinzed (モデルと辞書の既定値を持つラッパー)
+nix flake check                  # rinzed とプラグインのビルド、既定のソケットのパスの一致 (Lua 側)、cmd を省いた起動 (tests/nvim/default_cmd.lua)
 ```
 
 rinzed と Neovim プラグインは既定のソケットのパスを別々に組み立てる。
@@ -206,15 +318,53 @@ x86_64 では flake が `RUSTFLAGS` で AVX2 などを明示する。指定し�
 
 ### モデルと辞書
 
-どちらもリポジトリには入れない。開発時は次のように用意する。
+どちらもリポジトリには入れず、flake が取得する。
 
-- モデル: zenz-v3.2-small の GGUF (`ggml-model-Q5_K_M.gguf`) を Hugging Face から取得する。
-- 辞書: skk-dev/dict の `SKK-JISYO.L`。EUC-JP のままでも UTF-8 に変換したものでも読める。
+- モデル: [Miwa-Keita/zenz-v3.2-small-gguf](https://huggingface.co/Miwa-Keita/zenz-v3.2-small-gguf) の `ggml-model-Q5_K_M.gguf`。コミット `ef3e66e3665fe6a19598e6578e9b88a994b647fd` の URL から取得し、SHA-256 `29c223d4c23327b80fd13ebb5ab2555057a46317997d5da391584ffbef0db673` で固定する (Hugging Face の LFS の oid と同じ)。ライセンスは CC-BY-SA 4.0。
+- 辞書: nixpkgs の `skkDictionaries` (skk-dev/dict)。EUC-JP のままでも UTF-8 に変換したものでも読める。既定で入れるのは次の辞書で、どれも GPL-2.0-or-later。
+
+| 辞書 | 中身 |
+| --- | --- |
+| `SKK-JISYO.L` | 基本の辞書 |
+| `SKK-JISYO.jinmei` | 人名 |
+| `SKK-JISYO.geo` | 地名 |
+| `SKK-JISYO.station` | 駅名 |
+| `SKK-JISYO.propernoun` | 固有名詞 (企業、作品など) |
+
+テストと測定では、モデルと辞書のパスを環境変数で渡す。
 
 ```sh
-export RINZE_MODEL=/path/to/ggml-model-Q5_K_M.gguf
-export RINZE_DICT=/path/to/SKK-JISYO.L
+export RINZE_MODEL=$(nix build --no-link --print-out-paths .#rinze-zenz-model)
+export RINZE_DICT=$(nix build --no-link --print-out-paths .#rinze-dictionaries)/share/skk/SKK-JISYO.L
 ```
+
+### 複数の辞書
+
+rinzed は `--dict` を繰り返して複数のシステム辞書を受け取る。読み込むときに 1 つの辞書に合わせ、同じ見出しの候補は渡した順に、先の辞書にある語を除いて後ろに続ける。注釈は先の辞書のものを残す。
+並べ替えは合わせた候補全体に zenz でかけるので、辞書の順が効くのは abbrev (辞書の順のまま出す) と、点数づけに失敗したときだけである。
+ユーザー辞書の `skk-ignore-dic-word` は合わせた候補から除き、`X` でシステム辞書の語を消すときに書く注釈は、その語を持つ最初の辞書の書き方にする。
+
+既定の辞書は、辞書を足したときの影響を次のように測って決めた。起動時間と常駐メモリは `SKK-JISYO.L` に辞書を足した組ごとに 5 回 (組を交互に) 起動し、待ち受けを始めるまでの時間の中央値と、そのときの RSS を取った。
+コーパスは学習ありで 1 周打ち、rinzed が出す点数づけ 1 回ごとの所要時間の中央値、点数をつけた候補の延べ数、打ち終えたときの RSS を取った (各 1 回、16 コアの x86_64 で rinzed は 8 スレッド、`cargo build --release`)。
+
+| 辞書 | 起動 (ms) | RSS 起動時 (MB) | RSS コーパス後 (MB) | 点数づけの回数 / 候補の延べ数 | 点数づけの中央値 (ms) | 1 位正解率 |
+| --- | --- | --- | --- | --- | --- | --- |
+| L | 114 | 175 | 191 | 157 / 1548 | 23.3 | 198/206 |
+| L + jinmei | 117 | 179 | 195 | 159 / 1600 | 23.7 | 198/206 |
+| L + geo | 222 | 219 | 235 | 160 / 1575 | 23.2 | 198/206 |
+| L + station | 116 | 178 | 194 | 157 / 1548 | 23.2 | 198/206 |
+| L + propernoun | 115 | 177 | 193 | 157 / 1549 | 24.7 | 198/206 |
+| L + fullname | 117 | 180 | 197 | 157 / 1548 | 23.8 | 198/206 |
+| **L + jinmei + geo + station + propernoun** | **243** | **221** | **238** | **160 / 1624** | **23.7** | **198/206** |
+| 上 + fullname | 261 | 221 | 238 | 160 / 1624 | 23.7 | 198/206 |
+
+- どの組でも、コーパスの全 206 区間で Space の回数と最初の候補が L だけのときと同じだった。足した辞書の候補 (人名、地名) は zenz が下に置く。
+- 起動時間と常駐メモリはほぼ geo (11 万見出し) の分で、起動に約 110 ms、RSS に約 44 MB を足す。起動は rinzed が常駐するあいだ 1 回なので、地名を引ける利点を取った。
+- 点数づけの所要時間は候補の数にほぼ比例する。jinmei は一般の読みに名前を足す (`かんじ` は 12 件から 24 件になり、最初の点数づけが 22〜30 ms から 37〜39 ms になった。`timing` の example で 3 回ずつ)。候補の最も多い読み (`こう` 239 件、`しょう` 174 件) はほぼ L の候補なので、最悪の場合は変わらない。
+- fullname (有名人の姓名、2006 年まで) は費用はほぼ無いが、日常の入力で引く見出しが少ないので既定から外した。`override` で足せる。
+- skk-dev/dict の辞書には外来語のカタカナ表記がほとんど無い。「マヨネーズ」(`まよねーず`) はどの辞書にも無く、`こーひー` は L の「珈琲」だけなので、「コーヒー」は辞書を足しても zenz の生成した表記のまま出る。生成した表記は[学習](#学習)の対象でないので、選び直しても覚えない (コーパスで学習の履歴に書いた 7 件は L だけのときと同じだった)。
+
+測り直すには、`tests/nvim/corpus.sh` と example (`timing` など) の `RINZE_DICT` に辞書を `:` 区切りで渡す。`timing` は同じ問いの 2 回目から rinzed の覚えた点数を返すので、並べ替えの所要時間は最大値 (1 回目) を見る。
 
 ### モデルが要るテスト
 
@@ -240,7 +390,7 @@ tests/nvim/blink.sh
 
 ```sh
 cargo build --release -p rinzed
-tests/nvim/corpus.sh             # RINZED で rinzed を、CORPUS でコーパスを差し替えられる
+tests/nvim/corpus.sh             # RINZED で rinzed を、CORPUS でコーパスを差し替えられる。RINZE_DICT は : 区切りで複数の辞書を渡せる
 PASSES=2 tests/nvim/corpus.sh    # 1 周目で学習した状態で 2 周目を打つ。LEARNING=off で学習を止める
 ```
 
@@ -257,11 +407,13 @@ llama.cpp の版が変わると点数が 0.1〜1 nat 動くので、`llama-cpp-2
 
 ## Neovim
 
-`nvim/` を runtimepath に加え、起動コマンドを渡す。接続できなかったときにこのコマンドで rinzed を起動する。
+`nvim/` を runtimepath に加え (Nix では `rinze-nvim`、[入れ方](#入れ方))、`setup` を呼ぶ。ソケットに接続できなかったときは `cmd` で rinzed を起動する。
+`cmd` の既定は `{ 'rinzed' }` で、flake の `rinzed` が PATH にあればモデルと辞書の既定値で起動する。flake の外で入れた rinzed では、モデルと辞書を引数で渡す。
 
 ```lua
 require('rinze').setup({
-  cmd = { 'rinzed', '--model', '/path/to/ggml-model-Q5_K_M.gguf', '--dict', '/path/to/SKK-JISYO.L' },
+  -- flake の rinzed が PATH にあれば cmd は要らない
+  cmd = { 'rinzed', '--model', '/path/to/ggml-model-Q5_K_M.gguf', '--dict', '/path/to/SKK-JISYO.L', '--dict', '/path/to/SKK-JISYO.jinmei' },
 })
 -- C-j は rinze の中で SKK の C-j (確定、ひらがなに戻る) に使うので、オンオフには別のキーを割り当てる
 vim.keymap.set('i', '<C-l>', function() require('rinze').toggle() end)
@@ -299,10 +451,7 @@ Neovim を同時にいくつ開いても rinzed は 1 つだけ動く。rinzed �
 [blink.cmp](https://github.com/saghen/blink.cmp) を使っているなら、`setup` に `blink = true` を渡すと、見出しの入力中 (▽) にその読みの変換候補を blink.cmp のメニューに出す。blink.cmp が無いか、`blink` を渡さなければ何も変わらない。
 
 ```lua
-require('rinze').setup({
-  cmd = { 'rinzed', '--model', '/path/to/ggml-model-Q5_K_M.gguf', '--dict', '/path/to/SKK-JISYO.L' },
-  blink = true,
-})
+require('rinze').setup({ blink = true })
 ```
 
 - メニューの並びは Space で変換したときと同じ (zenz の点数と学習の加点) で、`Asita` と打てば `Asita` の Space で送る順に「明日」「朝」「晨」が出る。出すのは送りがなの無い見出しの辞書の候補だけで、送りがなの入力中、abbrev、辞書登録の入力欄では出さない。生成した表記も出さない。
