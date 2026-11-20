@@ -20,6 +20,7 @@ local state = {
   chan = nil,
   enabled = false,
   preedit = '',
+  anchor = nil,
   mode = nil,
   keys_mapped = false,
   float_buf = nil,
@@ -109,10 +110,10 @@ local function present(v)
   return v ~= nil and v ~= vim.NIL
 end
 
-local function show_float(registration, candidates)
+local function show_float(minibuffer, candidates)
   local lines = {}
-  if present(registration) then
-    table.insert(lines, registration.prompt .. registration.text .. registration.preedit)
+  if present(minibuffer) then
+    table.insert(lines, minibuffer.prompt .. minibuffer.text .. minibuffer.preedit)
   end
   if present(candidates) then
     local parts = {}
@@ -166,49 +167,92 @@ local function follow_mode(res)
   end
 end
 
-local function render(res)
-  local row, col = unpack(vim.api.nvim_win_get_cursor(0))
-  if res.commit ~= '' then
-    vim.api.nvim_buf_set_text(0, row - 1, col, row - 1, col, { res.commit })
-    col = col + #res.commit
-    vim.api.nvim_win_set_cursor(0, { row, col })
+local function preedit_position()
+  local anchor = state.anchor
+  if not (anchor and vim.api.nvim_buf_is_valid(anchor.buf)) then
+    return nil
   end
-  vim.api.nvim_buf_clear_namespace(0, ns, 0, -1)
+  local pos = vim.api.nvim_buf_get_extmark_by_id(anchor.buf, ns, anchor.mark, {})
+  if #pos == 0 then
+    return nil
+  end
+  return anchor.buf, pos[1], pos[2]
+end
+
+local function show(res)
+  if state.anchor and vim.api.nvim_buf_is_valid(state.anchor.buf) then
+    vim.api.nvim_buf_clear_namespace(state.anchor.buf, ns, 0, -1)
+  end
+  state.anchor = nil
   state.preedit = res.preedit
   if res.preedit ~= '' then
-    vim.api.nvim_buf_set_extmark(0, ns, row - 1, col, {
+    local row, col = unpack(vim.api.nvim_win_get_cursor(0))
+    -- 右 gravity の印は、このあと先読みから入る確定文字列に押されて、その後ろへ動く
+    local mark = vim.api.nvim_buf_set_extmark(0, ns, row - 1, col, {
       virt_text = { { res.preedit, 'RinzePreedit' } },
       virt_text_pos = 'inline',
+      right_gravity = true,
     })
+    state.anchor = { buf = vim.api.nvim_get_current_buf(), mark = mark }
   end
-  show_float(res.registration, res.candidates)
+  show_float(res.minibuffer, res.candidates)
   follow_mode(res)
 end
 
+-- 確定文字列は打鍵として先読みに入れる。API で書き込むと `.` で繰り返せず、undo も打鍵と別の単位になる。
+-- 'i' で先読み中のキーより前に差し込むので、後に入れるものから先に送る
+local function type_ahead(commit, lhs)
+  if lhs then
+    vim.api.nvim_feedkeys(vim.keycode(lhs), 'ni', false)
+  end
+  if commit ~= '' then
+    vim.api.nvim_feedkeys(commit, 'ni', true)
+  end
+end
+
+local function flush_in_place()
+  if not state.chan then
+    return
+  end
+  local ok, res = pcall(request, 'flush')
+  if not ok then
+    return
+  end
+  local buf, row, col = preedit_position()
+  if res.commit ~= '' and buf then
+    vim.api.nvim_buf_set_text(buf, row, col, row, col, { res.commit })
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    if buf == vim.api.nvim_get_current_buf() and cursor[1] == row + 1 and cursor[2] >= col then
+      vim.api.nvim_win_set_cursor(0, { cursor[1], cursor[2] + #res.commit })
+    end
+  end
+  show(res)
+end
+
+local function flush_if_cursor_left_preedit()
+  local buf, row, col = preedit_position()
+  if not buf then
+    return
+  end
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  if buf ~= vim.api.nvim_get_current_buf() or cursor[1] ~= row + 1 or cursor[2] ~= col then
+    flush_in_place()
+  end
+end
+
 local function on_key(name, lhs)
+  -- CursorMovedI は先読みが尽きるまで起きないので、続けて打たれたキーの前でも確かめる
+  flush_if_cursor_left_preedit()
   local col = vim.api.nvim_win_get_cursor(0)[2]
   local left = vim.api.nvim_get_current_line():sub(1, col)
   local ok, res = pcall(request, 'key', name, left)
   if not ok then
     vim.notify(tostring(res), vim.log.levels.ERROR)
-    vim.api.nvim_feedkeys(vim.keycode(lhs), 'ni', false)
+    type_ahead('', lhs)
     return
   end
-  render(res)
-  if not res.handled then
-    -- 'i' で先読み中のキーより前に差し込み、打った順を保つ
-    vim.api.nvim_feedkeys(vim.keycode(lhs), 'ni', false)
-  end
-end
-
-local function flush()
-  if not state.chan then
-    return
-  end
-  local ok, res = pcall(request, 'flush')
-  if ok then
-    render(res)
-  end
+  type_ahead(res.commit, not res.handled and lhs or nil)
+  show(res)
 end
 
 local function each_input_key(f)
@@ -231,8 +275,11 @@ end
 function map_input_keys()
   each_input_key(map_key)
   vim.keymap.set('i', '<Esc>', function()
-    flush()
-    vim.api.nvim_feedkeys(vim.keycode('<Esc>'), 'ni', false)
+    local ok, res = pcall(request, 'flush')
+    type_ahead(ok and res.commit or '', '<Esc>')
+    if ok then
+      show(res)
+    end
   end, { nowait = true, silent = true, desc = 'rinze' })
   state.keys_mapped = true
 end
@@ -256,9 +303,15 @@ function M.enable()
   end
   local res = request('reset')
   map_key(kakutei_key, 'ctrl-j')
-  vim.api.nvim_create_autocmd('InsertLeave', {
-    group = vim.api.nvim_create_augroup('rinze', { clear = true }),
-    callback = flush,
+  local group = vim.api.nvim_create_augroup('rinze', { clear = true })
+  -- 挿入モードのまま別のウィンドウへ移ったときは InsertLeave が起きない
+  vim.api.nvim_create_autocmd({ 'InsertLeave', 'WinLeave', 'BufLeave' }, {
+    group = group,
+    callback = flush_in_place,
+  })
+  vim.api.nvim_create_autocmd('CursorMovedI', {
+    group = group,
+    callback = flush_if_cursor_left_preedit,
   })
   state.enabled = true
   follow_mode(res)
@@ -268,7 +321,7 @@ function M.disable()
   if not state.enabled then
     return
   end
-  flush()
+  flush_in_place()
   unmap_input_keys()
   pcall(vim.keymap.del, 'i', kakutei_key)
   vim.api.nvim_del_augroup_by_name('rinze')

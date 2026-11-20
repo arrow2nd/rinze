@@ -6,11 +6,12 @@
 //!
 //! 入力モードは SKK と同じく、かな系 (ひらがな、カタカナ、半角カナ) と英字系 (ASCII、全角英字) に分かれる。
 //! 見出し (▽)、変換 (▼)、辞書登録はかな系のモードにしか無い。読みはどのモードでもひらがなで持ち、
-//! 表示と確定のときにモードの文字種にする。
+//! 表示と確定のときにモードの文字種にする。かな系のモードで `/` を打つと、SKK の abbrev と同じく英字の見出しを打てる。
 //!
 //! 候補は辞書の候補、生成した表記の順に送り、それも送り切ると SKK と同じ辞書登録に入る。
 //! 登録する語の入力欄も内側の [`Session`] で変換できるので、登録は入れ子になる。
 //! 入力欄は外側とは別のモードを持ち、ddskk と同じくひらがなで始まる。
+//! 候補の表示中に `X` を打つと、ddskk と同じく確かめてから表示中の候補を辞書から消す。
 
 mod romaji;
 mod script;
@@ -57,13 +58,47 @@ pub struct Okuri {
     pub kana: String,
 }
 
+/// 変換する見出し。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Midashi {
+    /// `reading` は送りがなを含まない読みで、モードによらずひらがな。
+    Kana {
+        reading: String,
+        okuri: Option<Okuri>,
+    },
+    /// SKK の abbrev。`/` のあとに打った英字をそのまま見出しにする。
+    Abbrev(String),
+}
+
+impl Midashi {
+    /// SKK 辞書の見出しの書式。送りありは読みと送りがなの子音 (`あt`) になる。
+    pub fn key(&self) -> String {
+        match self {
+            Midashi::Kana {
+                reading,
+                okuri: Some(okuri),
+            } => format!("{reading}{}", okuri.consonant),
+            Midashi::Kana {
+                reading,
+                okuri: None,
+            } => reading.clone(),
+            Midashi::Abbrev(text) => text.clone(),
+        }
+    }
+
+    pub fn okuri(&self) -> Option<&Okuri> {
+        match self {
+            Midashi::Kana { okuri, .. } => okuri.as_ref(),
+            Midashi::Abbrev(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Query<'a> {
     /// フロントエンドが送った左文脈に、同じキーの処理中に確定した文字列を足したもの。
     pub left_context: &'a str,
-    /// 送りがなを含まない読み。モードによらずひらがな。
-    pub reading: &'a str,
-    pub okuri: Option<&'a Okuri>,
+    pub midashi: &'a Midashi,
 }
 
 /// 候補はどれも送りがなを含まない。
@@ -73,7 +108,9 @@ pub trait Converter {
     /// 辞書に頼らずに表記を生成し、良い順に返す。辞書の候補を送り切ったとき (辞書に無ければ変換の開始時) に 1 度だけ呼ぶ。
     fn generate(&mut self, query: &Query) -> Vec<String>;
     /// 辞書登録で入力された語を保存する。
-    fn register(&mut self, reading: &str, okuri: Option<&Okuri>, word: &str);
+    fn register(&mut self, midashi: &Midashi, word: &str);
+    /// 語を辞書から消す。
+    fn purge(&mut self, midashi: &Midashi, word: &str);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -84,8 +121,8 @@ pub struct Response {
     pub preedit: String,
     /// 入力中の階層 (辞書登録中ならいちばん内側の入力欄) の候補一覧。
     pub candidates: Option<CandidatePage>,
-    /// 辞書登録中だけ、いちばん内側の入力欄。
-    pub registration: Option<RegistrationLine>,
+    /// 辞書登録の入力欄か、辞書から消すかの問いがあるときだけ、いちばん内側のもの。
+    pub minibuffer: Option<Minibuffer>,
     /// 次のキーを受ける階層 (辞書登録中ならいちばん内側の入力欄) のモード。
     pub mode: Mode,
     /// true の間は [`Key::Kakutei`] 以外のキーをすべて処理せずに返す (`handled` は false、`commit` は空)。
@@ -93,14 +130,15 @@ pub struct Response {
     pub passthrough: bool,
 }
 
-/// 辞書登録の入力欄。フロントエンドは `prompt` `text` `preedit` をこの順に並べて表示する。
+/// Emacs のミニバッファに当たる 1 行。フロントエンドは `prompt` `text` `preedit` をこの順に並べて表示する。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RegistrationLine {
-    /// `[辞書登録] まよねーず: `。入れ子の深さだけ括弧を重ねる。見出しはモードによらずひらがな。
+pub struct Minibuffer {
+    /// `[辞書登録] まよねーず: ` や `あした /明日/ を辞書から削除します。良いですか？ (yes or no) `。
+    /// 辞書登録は入れ子の深さだけ括弧を重ね、見出しはモードによらずひらがな。
     pub prompt: String,
-    /// 入力欄に確定した文字列。
+    /// 確定した文字列。
     pub text: String,
-    /// 入力欄の未確定文字列。
+    /// 未確定文字列。
     pub preedit: String,
 }
 
@@ -155,7 +193,15 @@ enum Switch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KanaKey {
     Switch(Switch),
+    // 打ちかけのローマ字の続き。大文字でも見出しを始めない (ddskk の `zL` の「⇒」)
+    Roman(char),
     Char(char),
+    // ddskk の `Q` (`skk-set-henkan-point-subr`)
+    SetHenkanPoint,
+    // ddskk の `X` (`skk-purge-from-jisyo`)。候補の表示中でなければ `X` をそのまま入れる
+    Purge,
+    // ddskk の `/` (`skk-abbrev-mode`)
+    Abbrev,
     Space,
     Enter,
     Backspace,
@@ -176,9 +222,17 @@ enum Phase {
         consonant: char,
         roman: Romaji,
     },
+    Abbrev {
+        text: String,
+    },
     Henkan {
         conv: Conversion,
         trailing_roman: Romaji,
+    },
+    Purge {
+        conv: Conversion,
+        trailing_roman: Romaji,
+        answer: String,
     },
     Register {
         reg: Box<Registration>,
@@ -195,14 +249,8 @@ impl Default for Phase {
 }
 
 #[derive(Debug)]
-struct Reading {
-    kana: String,
-    okuri: Option<Okuri>,
-}
-
-#[derive(Debug)]
 struct Conversion {
-    reading: Reading,
+    midashi: Midashi,
     candidates: Candidates,
     generated: bool,
     cursor: Cursor,
@@ -221,13 +269,19 @@ struct Registration {
 #[derive(Debug)]
 enum Origin {
     Candidates(Conversion),
-    NoCandidates(Reading),
+    NoCandidates(Midashi),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Cursor {
     Inline(usize),
     Page(usize),
+}
+
+enum PurgeAnswer {
+    Yes,
+    No,
+    Neither,
 }
 
 struct Step<'a> {
@@ -310,7 +364,7 @@ impl Session {
             commit,
             preedit: self.preedit(),
             candidates: self.page(),
-            registration: self.registration_line(1),
+            minibuffer: self.minibuffer(1),
             mode: self.mode(),
             passthrough: matches!(self.input, Input::Latin(Latin::Ascii)),
         }
@@ -334,11 +388,11 @@ impl Session {
         }
     }
 
-    fn registration_line(&self, depth: usize) -> Option<RegistrationLine> {
+    fn minibuffer(&self, depth: usize) -> Option<Minibuffer> {
         let Input::Kana(kana) = &self.input else {
             return None;
         };
-        kana.registration_line(depth)
+        kana.minibuffer(depth)
     }
 
     fn page(&self) -> Option<CandidatePage> {
@@ -388,11 +442,15 @@ impl Latin {
 impl KanaKey {
     fn of(key: Key, roman: &Romaji) -> Self {
         match key {
-            Key::Char(c) if roman.continues(c) => KanaKey::Char(c),
+            Key::Char(c) if roman.continues(c) => KanaKey::Roman(c),
             Key::Char('q') => KanaKey::Switch(Switch::ToggleKatakana),
             Key::Char('l') => KanaKey::Switch(Switch::Ascii),
             Key::Char('L') => KanaKey::Switch(Switch::FullwidthLatin),
+            Key::Char('Q') => KanaKey::SetHenkanPoint,
+            Key::Char('X') => KanaKey::Purge,
+            Key::Char('/') => KanaKey::Abbrev,
             Key::Char(c) => KanaKey::Char(c),
+            Key::Space if roman.continues(' ') => KanaKey::Roman(' '),
             Key::Space => KanaKey::Space,
             Key::Enter => KanaKey::Enter,
             Key::Backspace => KanaKey::Backspace,
@@ -448,10 +506,16 @@ impl KanaInput {
                 consonant,
                 roman,
             } => self.okuri(kana, consonant, roman, key, step),
+            Phase::Abbrev { text } => self.abbrev(text, key, step),
             Phase::Henkan {
                 conv,
                 trailing_roman,
             } => self.henkan(conv, trailing_roman, key, step),
+            Phase::Purge {
+                conv,
+                trailing_roman,
+                answer,
+            } => self.purge(conv, trailing_roman, answer, key, step),
             Phase::Register {
                 reg,
                 trailing_roman,
@@ -461,11 +525,14 @@ impl KanaInput {
 
     fn flush(&mut self) -> String {
         let hiragana = match mem::take(&mut self.phase) {
-            Phase::Direct { mut roman } => roman.flush_n_discard_rest().to_string(),
-            Phase::Midashi { kana, mut roman } => kana + roman.flush_n_discard_rest(),
+            Phase::Direct { mut roman } => roman.flush().to_string(),
+            Phase::Midashi { kana, mut roman } => kana + roman.flush(),
             Phase::Okuri { kana, .. } => kana,
-            Phase::Henkan { conv, .. } => return conv.displayed(self.script),
-            Phase::Register { reg, .. } => reg.reading().kana_surface(),
+            Phase::Abbrev { text } => return text,
+            Phase::Henkan { conv, .. } | Phase::Purge { conv, .. } => {
+                return conv.displayed(self.script);
+            }
+            Phase::Register { reg, .. } => return reg.midashi().typed(self.script),
         };
         self.script.render(&hiragana)
     }
@@ -473,26 +540,43 @@ impl KanaInput {
     fn direct(&mut self, mut roman: Romaji, key: Key, step: &mut Step) -> bool {
         let handled = match KanaKey::of(key, &roman) {
             KanaKey::Switch(switch) => {
-                step.commit
-                    .push_str(&self.script.render(roman.flush_n_discard_rest()));
+                step.commit.push_str(&self.script.render(roman.flush()));
                 step.next_mode = Some(self.script.after(switch));
                 return true;
             }
+            KanaKey::SetHenkanPoint => {
+                step.commit.push_str(&self.script.render(roman.flush()));
+                self.phase = Phase::Midashi {
+                    kana: String::new(),
+                    roman: Romaji::default(),
+                };
+                return true;
+            }
+            KanaKey::Abbrev => {
+                step.commit.push_str(&self.script.render(roman.flush()));
+                self.phase = Phase::Abbrev {
+                    text: String::new(),
+                };
+                return true;
+            }
+            KanaKey::Purge => {
+                step.commit.push_str(&self.script.render(roman.flush()));
+                step.commit.push('X');
+                true
+            }
             KanaKey::Char(c) if c.is_ascii_uppercase() => {
-                step.commit
-                    .push_str(&self.script.render(roman.flush_n_discard_rest()));
+                step.commit.push_str(&self.script.render(roman.flush()));
                 let mut roman = Romaji::default();
                 let kana = roman.feed(c.to_ascii_lowercase());
                 self.phase = Phase::Midashi { kana, roman };
                 return true;
             }
-            KanaKey::Char(c) => {
+            KanaKey::Roman(c) | KanaKey::Char(c) => {
                 step.commit.push_str(&self.script.render(&roman.feed(c)));
                 true
             }
             KanaKey::Space | KanaKey::Enter => {
-                step.commit
-                    .push_str(&self.script.render(roman.flush_n_discard_rest()));
+                step.commit.push_str(&self.script.render(roman.flush()));
                 false
             }
             KanaKey::Backspace => roman.backspace(),
@@ -516,30 +600,52 @@ impl KanaInput {
         }
     }
 
+    fn start_empty_midashi(&mut self, committed_kana: &str, step: &mut Step) {
+        step.commit.push_str(&self.script.render(committed_kana));
+        self.phase = Phase::Midashi {
+            kana: String::new(),
+            roman: Romaji::default(),
+        };
+    }
+
     fn midashi(&mut self, mut kana: String, mut roman: Romaji, key: Key, step: &mut Step) -> bool {
         match KanaKey::of(key, &roman) {
             KanaKey::Switch(switch) => {
-                kana.push_str(roman.flush_n_discard_rest());
+                kana.push_str(roman.flush());
                 self.commit_midashi(&kana, switch, step);
                 return true;
             }
+            KanaKey::SetHenkanPoint => {
+                kana.push_str(roman.flush());
+                self.start_empty_midashi(&kana, step);
+                return true;
+            }
+            KanaKey::Abbrev => kana.push_str(roman.flush()),
+            KanaKey::Purge => {
+                kana.push_str(roman.flush());
+                kana.push('X');
+            }
             KanaKey::Char(c) if c.is_ascii_uppercase() && !kana.is_empty() => {
-                kana.push_str(roman.flush_n_discard_rest());
+                kana.push_str(roman.flush());
                 let consonant = c.to_ascii_lowercase();
                 self.feed_okuri(kana, consonant, Romaji::default(), consonant, step);
                 return true;
             }
+            KanaKey::Roman(c) => kana.push_str(&roman.feed(c)),
             KanaKey::Char(c) => kana.push_str(&roman.feed(c.to_ascii_lowercase())),
             KanaKey::Space => {
-                kana.push_str(roman.flush_n_discard_rest());
+                kana.push_str(roman.flush());
                 if !kana.is_empty() {
-                    let reading = Reading { kana, okuri: None };
-                    self.convert(reading, Romaji::default(), step);
-                    return true;
+                    let midashi = Midashi::Kana {
+                        reading: kana,
+                        okuri: None,
+                    };
+                    self.convert(midashi, Romaji::default(), step);
                 }
+                return true;
             }
             KanaKey::Enter => {
-                kana.push_str(roman.flush_n_discard_rest());
+                kana.push_str(roman.flush());
                 step.commit.push_str(&self.script.render(&kana));
                 return true;
             }
@@ -564,8 +670,11 @@ impl KanaInput {
     ) -> bool {
         match KanaKey::of(key, &roman) {
             KanaKey::Switch(switch) => self.commit_midashi(&kana, switch, step),
-            KanaKey::Char(c) => self.feed_okuri(kana, consonant, roman, c, step),
-            KanaKey::Space => {
+            KanaKey::SetHenkanPoint => self.start_empty_midashi(&kana, step),
+            KanaKey::Roman(c) | KanaKey::Char(c) => {
+                self.feed_okuri(kana, consonant, roman, c, step)
+            }
+            KanaKey::Space | KanaKey::Abbrev | KanaKey::Purge => {
                 self.phase = Phase::Okuri {
                     kana,
                     consonant,
@@ -600,20 +709,48 @@ impl KanaInput {
                 roman,
             };
         } else {
-            let reading = Reading {
-                kana,
+            let midashi = Midashi::Kana {
+                reading: kana,
                 okuri: Some(Okuri {
                     consonant,
                     kana: okuri,
                 }),
             };
-            self.convert(reading, roman, step);
+            self.convert(midashi, roman, step);
         }
     }
 
-    fn convert(&mut self, reading: Reading, trailing_roman: Romaji, step: &mut Step) {
+    fn abbrev(&mut self, mut text: String, key: Key, step: &mut Step) -> bool {
+        match key {
+            Key::Char(c) => text.push(c),
+            Key::Space if text.is_empty() => return true,
+            Key::Space => {
+                self.convert(Midashi::Abbrev(text), Romaji::default(), step);
+                return true;
+            }
+            Key::Enter | Key::Kakutei => {
+                step.commit.push_str(&text);
+                return true;
+            }
+            Key::ToggleHalfwidth => {
+                step.commit
+                    .extend(text.chars().filter_map(script::fullwidth_latin));
+                return true;
+            }
+            Key::Backspace => {
+                if text.pop().is_none() {
+                    return true;
+                }
+            }
+            Key::Cancel => return true,
+        }
+        self.phase = Phase::Abbrev { text };
+        true
+    }
+
+    fn convert(&mut self, midashi: Midashi, trailing_roman: Romaji, step: &mut Step) {
         let left_context = step.left_context_with_commit();
-        let query = reading.query(&left_context);
+        let query = midashi.query(&left_context);
         let mut words = step.converter.candidates(&query);
         let generated = words.is_empty();
         if generated {
@@ -622,7 +759,7 @@ impl KanaInput {
         self.phase = match Candidates::new(words) {
             Some(candidates) => Phase::Henkan {
                 conv: Conversion {
-                    reading,
+                    midashi,
                     candidates,
                     generated,
                     cursor: Cursor::Inline(0),
@@ -630,7 +767,7 @@ impl KanaInput {
                 trailing_roman,
             },
             None => Phase::Register {
-                reg: Box::new(Registration::new(Origin::NoCandidates(reading))),
+                reg: Box::new(Registration::new(Origin::NoCandidates(midashi))),
                 trailing_roman,
             },
         };
@@ -655,18 +792,20 @@ impl KanaInput {
             }
             (Key::Char('x'), _) | (Key::Backspace, Cursor::Page(_)) => {
                 if !conv.prev() {
-                    self.phase = Phase::Midashi {
-                        kana: conv.reading.kana,
-                        roman: Romaji::default(),
-                    };
+                    self.phase = conv.midashi.reedit();
                     return true;
                 }
             }
-            (Key::Cancel, _) => {
-                self.phase = Phase::Midashi {
-                    kana: conv.reading.kana,
-                    roman: Romaji::default(),
+            (Key::Char('X'), Cursor::Inline(_)) => {
+                self.phase = Phase::Purge {
+                    conv,
+                    trailing_roman,
+                    answer: String::new(),
                 };
+                return true;
+            }
+            (Key::Cancel, _) => {
+                self.phase = conv.midashi.reedit();
                 return true;
             }
             (Key::Char(c), Cursor::Page(page)) => {
@@ -707,6 +846,54 @@ impl KanaInput {
         true
     }
 
+    // ddskk の `skk-purge-from-jisyo` は `yes-or-no-p` で確かめ、消したあとは表示中の候補も送りがなも消して確定する
+    fn purge(
+        &mut self,
+        conv: Conversion,
+        trailing_roman: Romaji,
+        mut answer: String,
+        key: Key,
+        step: &mut Step,
+    ) -> bool {
+        match key {
+            Key::Char(c) => answer.push(c),
+            Key::Space => answer.push(' '),
+            Key::Backspace => {
+                answer.pop();
+            }
+            Key::Enter | Key::Kakutei => match PurgeAnswer::of(&answer) {
+                PurgeAnswer::Yes => {
+                    if let Some(word) = conv.inline_word() {
+                        step.converter.purge(&conv.midashi, word);
+                    }
+                    return true;
+                }
+                PurgeAnswer::No => {
+                    self.phase = Phase::Henkan {
+                        conv,
+                        trailing_roman,
+                    };
+                    return true;
+                }
+                PurgeAnswer::Neither => answer.clear(),
+            },
+            Key::Cancel => {
+                self.phase = Phase::Henkan {
+                    conv,
+                    trailing_roman,
+                };
+                return true;
+            }
+            Key::ToggleHalfwidth => {}
+        }
+        self.phase = Phase::Purge {
+            conv,
+            trailing_roman,
+            answer,
+        };
+        true
+    }
+
     fn register(
         &mut self,
         mut reg: Box<Registration>,
@@ -721,10 +908,9 @@ impl KanaInput {
             match key {
                 Key::Enter if !reg.text.is_empty() => {
                     let word = reg.word_without_okuri();
-                    let reading = reg.reading();
-                    step.converter
-                        .register(&reading.kana, reading.okuri.as_ref(), word);
-                    step.commit.push_str(&reading.surface(word, self.script));
+                    step.converter.register(reg.midashi(), word);
+                    step.commit
+                        .push_str(&reg.midashi().surface(word, self.script));
                     self.phase = Phase::Direct {
                         roman: trailing_roman,
                     };
@@ -755,6 +941,7 @@ impl KanaInput {
             Phase::Direct { roman } => roman.pending().to_string(),
             Phase::Midashi { kana, roman } => format!("▽{}{}", render(kana), roman.pending()),
             Phase::Okuri { kana, roman, .. } => format!("▽{}*{}", render(kana), roman.pending()),
+            Phase::Abbrev { text } => format!("▽{text}"),
             Phase::Henkan {
                 conv,
                 trailing_roman,
@@ -763,26 +950,36 @@ impl KanaInput {
                 conv.displayed(self.script),
                 trailing_roman.pending()
             ),
-            Phase::Register { reg, .. } => format!("▼{}", render(&reg.reading().kana_surface())),
+            Phase::Purge { conv, .. } => format!("▼{}", conv.displayed(self.script)),
+            Phase::Register { reg, .. } => format!("▼{}", reg.midashi().typed(self.script)),
         }
     }
 
-    fn registration_line(&self, depth: usize) -> Option<RegistrationLine> {
-        let Phase::Register { reg, .. } = &self.phase else {
-            return None;
-        };
-        reg.inner.registration_line(depth + 1).or_else(|| {
-            Some(RegistrationLine {
+    fn minibuffer(&self, depth: usize) -> Option<Minibuffer> {
+        match &self.phase {
+            Phase::Register { reg, .. } => reg.inner.minibuffer(depth + 1).or_else(|| {
+                Some(Minibuffer {
+                    prompt: format!(
+                        "{}辞書登録{} {}: ",
+                        "[".repeat(depth),
+                        "]".repeat(depth),
+                        reg.midashi().label()
+                    ),
+                    text: reg.text.clone(),
+                    preedit: reg.inner.preedit(),
+                })
+            }),
+            Phase::Purge { conv, answer, .. } => Some(Minibuffer {
                 prompt: format!(
-                    "{}辞書登録{} {}: ",
-                    "[".repeat(depth),
-                    "]".repeat(depth),
-                    reg.reading().midashi()
+                    "{} /{}/ を辞書から削除します。良いですか？ (yes or no) ",
+                    conv.midashi.key(),
+                    conv.inline_word().unwrap_or_default()
                 ),
-                text: reg.text.clone(),
-                preedit: reg.inner.preedit(),
-            })
-        })
+                text: answer.clone(),
+                preedit: String::new(),
+            }),
+            _ => None,
+        }
     }
 
     fn page(&self) -> Option<CandidatePage> {
@@ -798,7 +995,7 @@ impl KanaInput {
             .page_words(page)
             .iter()
             .zip(PAGE_LABELS)
-            .map(|(word, label)| (label, conv.reading.surface(word, self.script)))
+            .map(|(word, label)| (label, conv.midashi.surface(word, self.script)))
             .collect();
         Some(CandidatePage {
             items,
@@ -814,35 +1011,62 @@ impl Step<'_> {
     }
 }
 
-impl Reading {
+impl PurgeAnswer {
+    fn of(answer: &str) -> Self {
+        match answer {
+            "yes" => PurgeAnswer::Yes,
+            "no" => PurgeAnswer::No,
+            _ => PurgeAnswer::Neither,
+        }
+    }
+}
+
+impl Midashi {
     fn query<'a>(&'a self, left_context: &'a str) -> Query<'a> {
         Query {
             left_context,
-            reading: &self.kana,
-            okuri: self.okuri.as_ref(),
+            midashi: self,
         }
     }
 
     fn surface(&self, word: &str, script: Script) -> String {
         let okuri = self
-            .okuri
-            .as_ref()
+            .okuri()
             .map_or(String::new(), |o| script.render(&o.kana));
         format!("{word}{okuri}")
     }
 
-    fn kana_surface(&self) -> String {
-        format!(
-            "{}{}",
-            self.kana,
-            self.okuri.as_ref().map_or("", |o| &o.kana)
-        )
+    fn typed(&self, script: Script) -> String {
+        match self {
+            Midashi::Kana { reading, okuri } => script.render(&format!(
+                "{reading}{}",
+                okuri.as_ref().map_or("", |o| &o.kana)
+            )),
+            Midashi::Abbrev(text) => text.clone(),
+        }
     }
 
-    fn midashi(&self) -> String {
-        match &self.okuri {
-            Some(okuri) => format!("{}*{}", self.kana, okuri.kana),
-            None => self.kana.clone(),
+    fn label(&self) -> String {
+        match self {
+            Midashi::Kana {
+                reading,
+                okuri: Some(okuri),
+            } => format!("{reading}*{}", okuri.kana),
+            Midashi::Kana {
+                reading,
+                okuri: None,
+            } => reading.clone(),
+            Midashi::Abbrev(text) => text.clone(),
+        }
+    }
+
+    fn reedit(self) -> Phase {
+        match self {
+            Midashi::Kana { reading, .. } => Phase::Midashi {
+                kana: reading,
+                roman: Romaji::default(),
+            },
+            Midashi::Abbrev(text) => Phase::Abbrev { text },
         }
     }
 }
@@ -856,10 +1080,10 @@ impl Registration {
         }
     }
 
-    fn reading(&self) -> &Reading {
+    fn midashi(&self) -> &Midashi {
         match &self.origin {
-            Origin::Candidates(conv) => &conv.reading,
-            Origin::NoCandidates(reading) => reading,
+            Origin::Candidates(conv) => &conv.midashi,
+            Origin::NoCandidates(midashi) => midashi,
         }
     }
 
@@ -868,9 +1092,8 @@ impl Registration {
     }
 
     fn word_without_okuri(&self) -> &str {
-        self.reading()
-            .okuri
-            .as_ref()
+        self.midashi()
+            .okuri()
             .and_then(|o| self.text.strip_suffix(o.kana.as_str()))
             .filter(|w| !w.is_empty())
             .unwrap_or(&self.text)
@@ -882,10 +1105,11 @@ impl Registration {
                 conv,
                 trailing_roman,
             },
-            Origin::NoCandidates(reading) => Phase::Midashi {
-                kana: reading.kana_surface(),
+            Origin::NoCandidates(Midashi::Kana { reading, okuri }) => Phase::Midashi {
+                kana: format!("{reading}{}", okuri.map_or(String::new(), |o| o.kana)),
                 roman: trailing_roman,
             },
+            Origin::NoCandidates(Midashi::Abbrev(text)) => Phase::Abbrev { text },
         }
     }
 }
@@ -921,8 +1145,15 @@ fn push_unique(list: &mut Vec<String>, words: Vec<String>) -> bool {
 impl Conversion {
     fn displayed(&self, script: Script) -> String {
         match self.cursor {
-            Cursor::Inline(i) => self.reading.surface(&self.candidates[i], script),
-            Cursor::Page(_) => script.render(&self.reading.kana_surface()),
+            Cursor::Inline(i) => self.midashi.surface(&self.candidates[i], script),
+            Cursor::Page(_) => self.midashi.typed(script),
+        }
+    }
+
+    fn inline_word(&self) -> Option<&str> {
+        match self.cursor {
+            Cursor::Inline(i) => Some(&self.candidates[i]),
+            Cursor::Page(_) => None,
         }
     }
 
@@ -933,7 +1164,7 @@ impl Conversion {
         self.generated = true;
         let shown_before = self.shown();
         let left_context = step.left_context_with_commit();
-        let words = step.converter.generate(&self.reading.query(&left_context));
+        let words = step.converter.generate(&self.midashi.query(&left_context));
         if !self.candidates.extend_unique(words) {
             return false;
         }
@@ -968,7 +1199,7 @@ impl Conversion {
         let index = PAGE_LABELS.iter().position(|&l| l == label)?;
         self.page_words(page)
             .get(index)
-            .map(|w| self.reading.surface(w, script))
+            .map(|w| self.midashi.surface(w, script))
     }
 
     fn next(&mut self) -> bool {

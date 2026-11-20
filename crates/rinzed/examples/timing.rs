@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use rinze_dict::Dictionary;
-use rinze_engine::{Okuri, Query};
+use rinze_engine::{Midashi, Okuri, Query};
 use rinze_zenz::{Model, Zenz};
 use rinzed::Backend;
 use rinzed::user_dict::UserDictionary;
@@ -67,10 +67,13 @@ fn main() {
         "読み\t辞書の候補数\t並べ替え ms (中央値/最小/最大)\t生成 ms (中央値/最小/最大)\t生成した候補"
     );
     for case in cases() {
+        let midashi = Midashi::Kana {
+            reading: case.reading.to_string(),
+            okuri: case.okuri.clone(),
+        };
         let query = Query {
             left_context: case.left_context,
-            reading: case.reading,
-            okuri: case.okuri.as_ref(),
+            midashi: &midashi,
         };
         let (mut rank, mut generate) = (Vec::new(), Vec::new());
         let (mut n, mut words) = (0, Vec::new());

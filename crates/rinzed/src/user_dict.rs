@@ -4,7 +4,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use rinze_dict::Dictionary;
+use rinze_dict::{Dictionary, Section};
+use rinze_engine::Midashi;
 
 #[derive(Debug)]
 pub struct UserDictionary {
@@ -39,32 +40,51 @@ impl UserDictionary {
         self.dict.lookup(key)
     }
 
-    /// `key` は送りありなら `あt` のように子音で終わる。語が辞書の書式で書けなければ何もせずにエラーを返す。
-    pub fn register(&mut self, key: &str, word: &str) -> io::Result<()> {
+    /// 語が辞書の書式で書けなければ何もせずにエラーを返す。
+    pub fn register(&mut self, midashi: &Midashi, word: &str) -> io::Result<()> {
+        let section = match midashi.okuri() {
+            Some(_) => Section::OkuriAri,
+            None => Section::OkuriNasi,
+        };
+        self.rewrite(|text| {
+            rinze_dict::add_entry(text, section, &midashi.key(), word).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("「{word}」は SKK 辞書の候補として書けない"),
+                )
+            })
+        })
+    }
+
+    /// 語がユーザー辞書に無ければ何もせずに false を返す。
+    pub fn purge(&mut self, midashi: &Midashi, word: &str) -> io::Result<bool> {
+        let mut found = false;
+        self.rewrite(|text| {
+            let removed = rinze_dict::remove_entry(text, &midashi.key(), word);
+            found = removed.is_some();
+            Ok(removed.unwrap_or_else(|| text.to_string()))
+        })?;
+        Ok(found)
+    }
+
+    fn rewrite(&mut self, edit: impl FnOnce(&str) -> io::Result<String>) -> io::Result<()> {
         let text = match &mut self.storage {
             Storage::Memory(text) => {
-                *text = add_entry(text, key, word)?;
+                *text = edit(text)?;
                 text.clone()
             }
             Storage::File(path) => {
                 let (_lock, latest) = lock_and_read(path)?;
-                let text = add_entry(&latest, key, word)?;
-                write_atomically(path, text.as_bytes())?;
+                let text = edit(&latest)?;
+                if text != latest {
+                    write_atomically(path, text.as_bytes())?;
+                }
                 text
             }
         };
         self.dict = Dictionary::parse(&text);
         Ok(())
     }
-}
-
-fn add_entry(text: &str, key: &str, word: &str) -> io::Result<String> {
-    rinze_dict::add_entry(text, key, word).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("「{word}」は SKK 辞書の候補として書けない"),
-        )
-    })
 }
 
 fn lock_and_read(path: &Path) -> io::Result<(File, String)> {
@@ -111,21 +131,48 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use rinze_engine::Okuri;
+
     use super::*;
+
+    fn kana(reading: &str) -> Midashi {
+        Midashi::Kana {
+            reading: reading.into(),
+            okuri: None,
+        }
+    }
+
+    fn okuri_ari(reading: &str, consonant: char, okuri: &str) -> Midashi {
+        Midashi::Kana {
+            reading: reading.into(),
+            okuri: Some(Okuri {
+                consonant,
+                kana: okuri.into(),
+            }),
+        }
+    }
 
     #[test]
     fn 登録した語はファイルに残り_開き直しても引ける() {
         let dir = std::env::temp_dir().join(format!("rinze-user-dict-{}", std::process::id()));
         let path = dir.join("nested").join("user.jisyo");
         let mut user = UserDictionary::open(path.clone()).unwrap();
-        user.register("まよねーず", "マヨネーズ").unwrap();
-        user.register("あe", "和").unwrap();
+        user.register(&kana("まよねーず"), "マヨネーズ").unwrap();
+        user.register(&okuri_ari("あ", 'e', "え"), "和").unwrap();
+        user.register(&Midashi::Abbrev("file".into()), "ファイル")
+            .unwrap();
         assert_eq!(user.lookup("あe"), ["和"]);
-        assert!(user.register("あ", "a/b").is_err());
+        assert!(user.register(&kana("あ"), "a/b").is_err());
 
         let reopened = UserDictionary::open(path.clone()).unwrap();
         assert_eq!(reopened.lookup("まよねーず"), ["マヨネーズ"]);
         assert_eq!(reopened.lookup("あe"), ["和"]);
+        assert_eq!(reopened.lookup("file"), ["ファイル"]);
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(
+            text.ends_with(";; okuri-nasi entries.\nfile /ファイル/\nまよねーず /マヨネーズ/\n"),
+            "英字の見出しは送りなしの節に書く: {text}"
+        );
         let names: Vec<_> = fs::read_dir(path.parent().unwrap())
             .unwrap()
             .map(|e| e.unwrap().file_name().into_string().unwrap())
@@ -138,14 +185,30 @@ mod tests {
     }
 
     #[test]
+    fn 消した語はファイルからも消え_無い語を消しても何も変えない() {
+        let dir =
+            std::env::temp_dir().join(format!("rinze-user-dict-purge-{}", std::process::id()));
+        let path = dir.join("user.jisyo");
+        let mut user = UserDictionary::open(path.clone()).unwrap();
+        user.register(&kana("りんぜ"), "凛是").unwrap();
+        user.register(&kana("りんぜ"), "林是").unwrap();
+        assert!(user.purge(&kana("りんぜ"), "凛是").unwrap());
+        assert_eq!(user.lookup("りんぜ"), ["林是"]);
+        assert!(!user.purge(&kana("りんぜ"), "凛是").unwrap());
+        let reopened = UserDictionary::open(path.clone()).unwrap();
+        assert_eq!(reopened.lookup("りんぜ"), ["林是"]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn 別の書き手が足した語を消さない() {
         let dir =
             std::env::temp_dir().join(format!("rinze-user-dict-merge-{}", std::process::id()));
         let path = dir.join("user.jisyo");
         let mut a = UserDictionary::open(path.clone()).unwrap();
         let mut b = UserDictionary::open(path.clone()).unwrap();
-        a.register("りんぜ", "凛是").unwrap();
-        b.register("まよ", "真夜").unwrap();
+        a.register(&kana("りんぜ"), "凛是").unwrap();
+        b.register(&kana("まよ"), "真夜").unwrap();
         let text = fs::read_to_string(&path).unwrap();
         assert!(
             text.contains("りんぜ /凛是/") && text.contains("まよ /真夜/"),

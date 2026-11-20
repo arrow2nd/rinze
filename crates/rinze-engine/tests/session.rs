@@ -1,21 +1,22 @@
 use std::collections::HashMap;
 
 use rinze_engine::{
-    CandidatePage, Converter, Key, Mode, Okuri, Query, RegistrationLine, Response, Session,
+    CandidatePage, Converter, Key, Midashi, Minibuffer, Mode, Okuri, Query, Response, Session,
 };
 
 #[derive(Debug, PartialEq)]
 struct Recorded {
     left_context: String,
-    reading: String,
-    okuri: Option<Okuri>,
+    midashi: Midashi,
 }
 
 fn recorded(left_context: &str, reading: &str, okuri: Option<Okuri>) -> Recorded {
     Recorded {
         left_context: left_context.to_string(),
-        reading: reading.to_string(),
-        okuri,
+        midashi: Midashi::Kana {
+            reading: reading.to_string(),
+            okuri,
+        },
     }
 }
 
@@ -39,6 +40,7 @@ struct Table {
     queries: Vec<Recorded>,
     generations: Vec<Recorded>,
     registered: Vec<Registered>,
+    purged: Vec<Registered>,
 }
 
 fn table(entries: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
@@ -48,15 +50,11 @@ fn table(entries: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
         .collect()
 }
 
-fn midashi(reading: &str, okuri: Option<&Okuri>) -> String {
-    match okuri {
-        Some(o) => format!("{reading}{}", o.consonant),
-        None => reading.to_string(),
-    }
-}
-
 fn record(q: &Query) -> Recorded {
-    recorded(q.left_context, q.reading, q.okuri.cloned())
+    Recorded {
+        left_context: q.left_context.to_string(),
+        midashi: q.midashi.clone(),
+    }
 }
 
 impl Table {
@@ -76,35 +74,47 @@ impl Table {
 impl Converter for Table {
     fn candidates(&mut self, q: &Query) -> Vec<String> {
         self.queries.push(record(q));
-        let key = midashi(q.reading, q.okuri);
-        self.entries.get(&key).cloned().unwrap_or_default()
+        self.entries
+            .get(&q.midashi.key())
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn generate(&mut self, q: &Query) -> Vec<String> {
         self.generations.push(record(q));
-        let key = midashi(q.reading, q.okuri);
-        self.generated.get(&key).cloned().unwrap_or_default()
+        self.generated
+            .get(&q.midashi.key())
+            .cloned()
+            .unwrap_or_default()
     }
 
-    fn register(&mut self, reading: &str, okuri: Option<&Okuri>, word: &str) {
-        let key = midashi(reading, okuri);
+    fn register(&mut self, midashi: &Midashi, word: &str) {
+        let key = midashi.key();
         self.registered.push(registered(&key, word));
         self.entries
             .entry(key)
             .or_default()
             .insert(0, word.to_string());
     }
+
+    fn purge(&mut self, midashi: &Midashi, word: &str) {
+        let key = midashi.key();
+        self.purged.push(registered(&key, word));
+        if let Some(words) = self.entries.get_mut(&key) {
+            words.retain(|w| w != word);
+        }
+    }
 }
 
-struct Editor {
+struct Editor<C: Converter = Table> {
     session: Session,
-    table: Table,
+    table: C,
     buffer: String,
     last: Response,
 }
 
-impl Editor {
-    fn new(table: Table) -> Self {
+impl<C: Converter> Editor<C> {
+    fn new(table: C) -> Self {
         Self {
             session: Session::default(),
             table,
@@ -164,9 +174,9 @@ impl Editor {
         self.last.candidates.as_ref()
     }
 
-    fn registration(&self) -> Option<String> {
-        self.last.registration.as_ref().map(
-            |RegistrationLine {
+    fn minibuffer(&self) -> Option<String> {
+        self.last.minibuffer.as_ref().map(
+            |Minibuffer {
                  prompt,
                  text,
                  preedit,
@@ -336,7 +346,7 @@ fn 四回目までその場に出し五回目から一覧にする() {
     assert_eq!((page.page, page.items.len()), (1, 1));
     ed.type_keys("<Space>");
     assert_eq!(
-        ed.registration().as_deref(),
+        ed.minibuffer().as_deref(),
         Some("[辞書登録] かんじ: "),
         "辞書の候補も生成もなければ登録に入る"
     );
@@ -387,20 +397,20 @@ fn 候補が無ければ登録に入り_やめると見出しに戻って_enter_
     let mut ed = Editor::new(Table::new(&[]));
     ed.type_keys("Rinze<Space>");
     assert_eq!(ed.preedit(), "▼りんぜ");
-    assert_eq!(ed.registration().as_deref(), Some("[辞書登録] りんぜ: "));
+    assert_eq!(ed.minibuffer().as_deref(), Some("[辞書登録] りんぜ: "));
     assert_eq!(
         ed.table.generations.len(),
         1,
         "辞書に無ければ変換の開始時に生成する"
     );
     ed.type_keys("<C-g>");
-    assert_eq!((ed.preedit(), ed.registration()), ("▽りんぜ", None));
+    assert_eq!((ed.preedit(), ed.minibuffer()), ("▽りんぜ", None));
     ed.type_keys("<CR>");
     assert_eq!((ed.buffer.as_str(), ed.preedit()), ("りんぜ", ""));
 
     ed.type_keys("Rinze<Space><CR>");
     assert_eq!(
-        (ed.preedit(), ed.registration()),
+        (ed.preedit(), ed.minibuffer()),
         ("▽りんぜ", None),
         "空のまま Enter しても登録をやめる"
     );
@@ -433,7 +443,7 @@ fn 辞書の候補を送り切ると生成した表記に進み_重複は出さ�
     assert_eq!(ed.preedit(), "▼朝", "生成した表記から辞書の候補へ戻れる");
     ed.type_keys("<Space><Space><Space>");
     assert!(
-        ed.registration().is_some(),
+        ed.minibuffer().is_some(),
         "生成した表記も送り切ると登録に入る"
     );
     assert_eq!(ed.table.generations.len(), 1, "生成は 1 度だけ");
@@ -464,10 +474,10 @@ fn 一覧の最後のページに空きがあれば生成した表記をその�
 fn 登録した語を元の位置に確定し_次の変換で候補に出る() {
     let mut ed = Editor::new(Table::new(&[("りん", &["林"]), ("ぜ", &["是"])]));
     ed.type_keys("korehaRinze<Space>");
-    assert_eq!(ed.registration().as_deref(), Some("[辞書登録] りんぜ: "));
+    assert_eq!(ed.minibuffer().as_deref(), Some("[辞書登録] りんぜ: "));
     ed.type_keys("Rin<Space>");
     assert_eq!(
-        ed.registration().as_deref(),
+        ed.minibuffer().as_deref(),
         Some("[辞書登録] りんぜ: ▼林"),
         "入力欄でも変換できる"
     );
@@ -476,19 +486,13 @@ fn 登録した語を元の位置に確定し_次の変換で候補に出る() {
         "入力欄の変換の左文脈は元の位置の左文脈"
     );
     ed.type_keys("Ze<Space>");
-    assert_eq!(
-        ed.registration().as_deref(),
-        Some("[辞書登録] りんぜ: 林▼是")
-    );
+    assert_eq!(ed.minibuffer().as_deref(), Some("[辞書登録] りんぜ: 林▼是"));
     ed.type_keys("<CR>");
-    assert_eq!(
-        ed.registration().as_deref(),
-        Some("[辞書登録] りんぜ: 林是")
-    );
+    assert_eq!(ed.minibuffer().as_deref(), Some("[辞書登録] りんぜ: 林是"));
     assert_eq!(ed.buffer, "これは", "入力欄の確定は元の位置には入らない");
     ed.type_keys("<CR>");
     assert_eq!(
-        (ed.buffer.as_str(), ed.preedit(), ed.registration()),
+        (ed.buffer.as_str(), ed.preedit(), ed.minibuffer()),
         ("これは林是", "", None)
     );
     assert_eq!(ed.table.registered, [registered("りんぜ", "林是")]);
@@ -502,23 +506,20 @@ fn 登録は入れ子にでき_内側をやめると外側の入力欄に戻る(
     let mut ed = Editor::new(Table::new(&[]));
     ed.type_keys("Mayone-zu<Space>");
     ed.type_keys("Mayo<Space>");
-    assert_eq!(ed.registration().as_deref(), Some("[[辞書登録]] まよ: "));
+    assert_eq!(ed.minibuffer().as_deref(), Some("[[辞書登録]] まよ: "));
     ed.type_keys("<C-g>");
     assert_eq!(
-        ed.registration().as_deref(),
+        ed.minibuffer().as_deref(),
         Some("[辞書登録] まよねーず: ▽まよ"),
         "内側の登録をやめると外側の入力欄の見出しに戻る"
     );
     ed.type_keys("<C-g>");
-    assert_eq!(
-        ed.registration().as_deref(),
-        Some("[辞書登録] まよねーず: ")
-    );
+    assert_eq!(ed.minibuffer().as_deref(), Some("[辞書登録] まよねーず: "));
 
     ed.type_keys("Mayo<Space>");
     ed.type_keys("真夜<CR>");
     assert_eq!(
-        ed.registration().as_deref(),
+        ed.minibuffer().as_deref(),
         Some("[辞書登録] まよねーず: 真夜"),
         "内側で登録した語は外側の入力欄に入る"
     );
@@ -538,16 +539,16 @@ fn 入力欄の後退と_c_g_は入力途中があればそれを先に扱う() 
     let mut ed = Editor::new(Table::new(&[]));
     ed.type_keys("Mayone-zu<Space>mayo<BS>");
     assert_eq!(
-        ed.registration().as_deref(),
+        ed.minibuffer().as_deref(),
         Some("[辞書登録] まよねーず: ま")
     );
     ed.type_keys("Yo<C-g>");
     assert_eq!(
-        ed.registration().as_deref(),
+        ed.minibuffer().as_deref(),
         Some("[辞書登録] まよねーず: ま")
     );
     ed.type_keys("<C-g>");
-    assert_eq!((ed.preedit(), ed.registration()), ("▽まよねーず", None));
+    assert_eq!((ed.preedit(), ed.minibuffer()), ("▽まよねーず", None));
     assert!(ed.table.registered.is_empty());
 }
 
@@ -556,7 +557,7 @@ fn 送りありの語を登録する() {
     let mut ed = Editor::new(Table::new(&[]));
     ed.type_keys("AE");
     assert_eq!(ed.preedit(), "▼あえ");
-    assert_eq!(ed.registration().as_deref(), Some("[辞書登録] あ*え: "));
+    assert_eq!(ed.minibuffer().as_deref(), Some("[辞書登録] あ*え: "));
     ed.type_keys("和<CR>");
     assert_eq!((ed.buffer.as_str(), ed.preedit()), ("和え", ""));
 
@@ -579,7 +580,7 @@ fn 登録中の_flush_は見出しをかなで確定する() {
     let mut ed = Editor::new(Table::new(&[]));
     ed.type_keys("Rinze<Space>ri");
     let res = ed.session.flush();
-    assert_eq!((res.commit.as_str(), res.registration), ("りんぜ", None));
+    assert_eq!((res.commit.as_str(), res.minibuffer), ("りんぜ", None));
 }
 
 #[test]
@@ -837,24 +838,24 @@ fn 辞書登録の入力欄はひらがなで始まり_外側のモードとは�
     ed.type_keys("qRinze<Space>");
     assert_eq!(ed.preedit(), "▼リンゼ");
     assert_eq!(
-        (ed.registration().as_deref(), ed.mode()),
+        (ed.minibuffer().as_deref(), ed.mode()),
         (Some("[辞書登録] りんぜ: "), Mode::Hiragana),
         "見出しはひらがなで出し、入力欄はひらがなで始まる"
     );
     ed.type_keys("aqa");
     assert_eq!(
-        (ed.registration().as_deref(), ed.mode()),
+        (ed.minibuffer().as_deref(), ed.mode()),
         (Some("[辞書登録] りんぜ: あア"), Mode::Katakana)
     );
     ed.type_keys("lb");
     assert_eq!(
-        (ed.registration().as_deref(), ed.mode(), ed.last.passthrough),
+        (ed.minibuffer().as_deref(), ed.mode(), ed.last.passthrough),
         (Some("[辞書登録] りんぜ: あアb"), Mode::Ascii, false),
         "入力欄の ASCII は文字を入力欄に入れるので、素通しにはしない"
     );
     ed.type_keys("<C-j>Kana<CR>");
     assert_eq!(
-        ed.registration().as_deref(),
+        ed.minibuffer().as_deref(),
         Some("[辞書登録] りんぜ: あアbかな")
     );
     ed.type_keys("<CR>");
@@ -872,22 +873,22 @@ fn 入れ子の入力欄もひらがなで始まり_やめると外側の入力�
     ed.type_keys("<C-q>Mayone-zu<Space>");
     ed.type_keys("qMayo");
     assert_eq!(
-        ed.registration().as_deref(),
+        ed.minibuffer().as_deref(),
         Some("[辞書登録] まよねーず: ▽マヨ")
     );
     ed.type_keys("<Space>");
     assert_eq!(
-        (ed.registration().as_deref(), ed.mode()),
+        (ed.minibuffer().as_deref(), ed.mode()),
         (Some("[[辞書登録]] まよ: "), Mode::Hiragana)
     );
     ed.type_keys("<C-g>");
     assert_eq!(
-        (ed.registration().as_deref(), ed.mode()),
+        (ed.minibuffer().as_deref(), ed.mode()),
         (Some("[辞書登録] まよねーず: ▽マヨ"), Mode::Katakana)
     );
     ed.type_keys("<C-g><C-g>");
     assert_eq!(
-        (ed.preedit(), ed.registration(), ed.mode()),
+        (ed.preedit(), ed.minibuffer(), ed.mode()),
         ("▽ﾏﾖﾈｰｽﾞ", None, Mode::HalfwidthKatakana)
     );
 }
@@ -897,7 +898,7 @@ fn カタカナモードで送りありの語を登録する() {
     let mut ed = Editor::new(Table::new(&[]));
     ed.type_keys("qAE");
     assert_eq!(
-        (ed.preedit(), ed.registration().as_deref()),
+        (ed.preedit(), ed.minibuffer().as_deref()),
         ("▼アエ", Some("[辞書登録] あ*え: "))
     );
     ed.type_keys("和<CR>");
@@ -920,4 +921,312 @@ fn flush_はモードを保ち_reset_はひらがなに戻す() {
         (res.commit.as_str(), res.mode, res.preedit.as_str()),
         ("カ", Mode::Hiragana, "")
     );
+}
+
+#[test]
+fn ローマ字の表は_ddskk_の既定に揃える() {
+    for (keys, want) in [
+        ("cyacyucyo", "ちゃちゅちょ"),
+        ("fyujya", "ふゅじゃ"),
+        ("tha", "てぁ"),
+        ("xwexwi", "ゑゐ"),
+        ("amma", "あんま"),
+        ("z*z0z@z{z}z(z)zLzn", "※○◎【】（）⇒ー"),
+        ("z:z;", "゜゛"),
+        ("z<Space>", "　"),
+        ("!~", "!~"),
+        ("?:;[]", "？：；「」"),
+    ] {
+        let mut ed = Editor::new(Table::new(&[]));
+        ed.type_keys(keys);
+        assert_eq!(ed.buffer, want, "{keys}");
+    }
+}
+
+#[test]
+fn 半角カナモードの_チルダは半角のまま() {
+    let mut ed = Editor::new(Table::new(&[]));
+    ed.type_keys("<C-q>a~z-");
+    assert_eq!(ed.buffer, "ｱ~〜");
+}
+
+#[test]
+fn 大文字の_q_は空の見出しに入る() {
+    let mut ed = Editor::new(Table::new(&[("あした", &["明日"])]));
+    ed.type_keys("Q");
+    assert_eq!(ed.preedit(), "▽");
+    ed.type_keys("asita<Space>");
+    assert_eq!(ed.preedit(), "▼明日");
+    ed.type_keys("Q");
+    assert_eq!(
+        (ed.buffer.as_str(), ed.preedit()),
+        ("明日", "▽"),
+        "候補を確定して空の見出しに入る"
+    );
+    ed.type_keys("Q");
+    assert_eq!(ed.preedit(), "▽", "空の見出しでは何もしない");
+    ed.type_keys("asiQta");
+    assert_eq!(
+        (ed.buffer.as_str(), ed.preedit()),
+        ("明日あし", "▽た"),
+        "見出しをかなで確定して新しい見出しに入る"
+    );
+    ed.type_keys("<C-g>ATQ");
+    assert_eq!(
+        (ed.buffer.as_str(), ed.preedit()),
+        ("明日あしあ", "▽"),
+        "送りがなの途中では送りがなを捨てて確定する"
+    );
+}
+
+#[test]
+fn 空の見出しで_space_を打つと見出しをやめる() {
+    let mut ed = Editor::new(Table::new(&[]));
+    ed.type_keys("Q<Space>");
+    assert_eq!((ed.buffer.as_str(), ed.preedit()), ("", ""));
+    ed.type_keys("a");
+    assert_eq!(ed.buffer, "あ");
+}
+
+#[test]
+fn 候補の表示中でなければ大文字の_x_はそのまま入る() {
+    let mut ed = Editor::new(Table::new(&[]));
+    ed.type_keys("kX");
+    assert_eq!((ed.buffer.as_str(), ed.preedit()), ("X", ""));
+    ed.type_keys("AsiX");
+    assert_eq!(ed.preedit(), "▽あしX", "見出しにもそのまま入る");
+}
+
+#[test]
+fn 見出しの途中の_スラッシュは何もしない() {
+    let mut ed = Editor::new(Table::new(&[]));
+    ed.type_keys("Asi/");
+    assert_eq!(ed.preedit(), "▽あし");
+    ed.type_keys("z/");
+    assert_eq!(
+        ed.preedit(),
+        "▽あし・",
+        "ローマ字の続きならローマ字として扱う"
+    );
+}
+
+#[test]
+fn 候補の表示中に大文字の_x_を打つと確かめてから辞書から消す() {
+    let mut ed = Editor::new(Table::new(&[("あした", &["明日", "朝"])]));
+    ed.type_keys("Asita<Space><Space>X");
+    let question = "あした /朝/ を辞書から削除します。良いですか？ (yes or no) ";
+    assert_eq!(
+        (ed.preedit(), ed.minibuffer().as_deref()),
+        ("▼朝", Some(question))
+    );
+    ed.type_keys("ye");
+    assert_eq!(ed.minibuffer(), Some(format!("{question}ye")));
+    ed.type_keys("<CR>");
+    assert_eq!(
+        ed.minibuffer().as_deref(),
+        Some(question),
+        "yes でも no でもなければ聞き直す"
+    );
+    ed.type_keys("no<CR>");
+    assert_eq!(
+        (ed.preedit(), ed.minibuffer()),
+        ("▼朝", None),
+        "no で候補に戻る"
+    );
+    ed.type_keys("X<C-g>");
+    assert_eq!(
+        (ed.preedit(), ed.minibuffer()),
+        ("▼朝", None),
+        "C-g でも候補に戻る"
+    );
+    assert!(ed.table.purged.is_empty());
+
+    ed.type_keys("Xyes<CR>");
+    assert_eq!(
+        (ed.buffer.as_str(), ed.preedit(), ed.minibuffer()),
+        ("", "", None),
+        "消した候補は確定せずに消える"
+    );
+    assert_eq!(ed.table.purged, [registered("あした", "朝")]);
+    ed.type_keys("Asita<Space><Space>");
+    assert!(
+        ed.minibuffer().is_some(),
+        "消した語は次の変換で候補に出ない"
+    );
+}
+
+#[test]
+fn 送りありの候補を消すと送りがなも残さない() {
+    let mut ed = Editor::new(Table::new(&[("あt", &["会", "合"])]));
+    ed.type_keys("ATt");
+    assert_eq!(ed.preedit(), "▼会っt");
+    ed.type_keys("X");
+    assert_eq!(
+        ed.minibuffer().as_deref(),
+        Some("あt /会/ を辞書から削除します。良いですか？ (yes or no) ")
+    );
+    ed.type_keys("<C-g>");
+    assert_eq!(ed.preedit(), "▼会っt", "やめれば打ちかけのローマ字も戻る");
+    ed.type_keys("Xyes<CR>e");
+    assert_eq!(ed.buffer, "え");
+    assert_eq!(ed.table.purged, [registered("あt", "会")]);
+}
+
+#[test]
+fn 一覧の表示中の大文字の_x_は何もしない() {
+    let mut ed = Editor::new(Table::new(&[("かんじ", KANJI)]));
+    ed.type_keys("Kanji<Space><Space><Space><Space><Space>X");
+    assert_eq!(
+        (ed.minibuffer(), ed.page().map(|p| p.page)),
+        (None, Some(0))
+    );
+}
+
+#[test]
+fn スラッシュで英字の見出しを打ち_space_で変換する() {
+    let mut ed = Editor::new(Table::new(&[
+        ("file", &["ファイル"]),
+        ("data", &["データ", "データー"]),
+    ]));
+    ed.type_keys("/file");
+    assert_eq!(ed.preedit(), "▽file");
+    ed.type_keys("<Space>");
+    assert_eq!(ed.preedit(), "▼ファイル");
+    assert_eq!(
+        ed.table.queries,
+        [Recorded {
+            left_context: String::new(),
+            midashi: Midashi::Abbrev("file".into())
+        }]
+    );
+    ed.type_keys("a");
+    assert_eq!(
+        (ed.buffer.as_str(), ed.mode()),
+        ("ファイルあ", Mode::Hiragana),
+        "次の文字で確定し、その文字はかなとして打つ"
+    );
+    ed.type_keys("/data<Space><Space>.");
+    assert_eq!(ed.buffer, "ファイルあデーター。");
+}
+
+#[test]
+fn 英字の見出しには小文字の_q_や_l_や大文字や記号もそのまま入る() {
+    let mut ed = Editor::new(Table::new(&[]));
+    ed.type_keys("/Fi-le.q/lLX");
+    assert_eq!((ed.preedit(), ed.mode()), ("▽Fi-le.q/lLX", Mode::Hiragana));
+}
+
+#[test]
+fn 英字の見出しの確定と取り消し() {
+    for (keys, buffer) in [
+        ("/file<CR>", "file"),
+        ("/file<C-j>", "file"),
+        ("/file<C-q>", "ｆｉｌｅ"),
+        ("/file<C-g>", ""),
+        ("/<Space>a", "あ"),
+        ("/<BS>a", "あ"),
+        ("n/file<CR>", "んfile"),
+    ] {
+        let mut ed = Editor::new(Table::new(&[]));
+        ed.type_keys(keys);
+        assert_eq!(
+            (ed.buffer.as_str(), ed.preedit(), ed.mode()),
+            (buffer, "", Mode::Hiragana),
+            "{keys}"
+        );
+    }
+    let mut ed = Editor::new(Table::new(&[]));
+    ed.type_keys("/fi<BS>");
+    assert_eq!(ed.preedit(), "▽f");
+}
+
+#[test]
+fn 英字の見出しの変換を取り消すと英字の見出しに戻る() {
+    let mut ed = Editor::new(Table::new(&[("data", &["データ", "データー"])]));
+    ed.type_keys("/data<Space><C-g>");
+    assert_eq!(ed.preedit(), "▽data");
+    ed.type_keys("<Space><Space>x");
+    assert_eq!(ed.preedit(), "▼データ");
+    ed.type_keys("x");
+    assert_eq!(ed.preedit(), "▽data");
+}
+
+#[test]
+fn 英字の見出しが辞書に無ければその見出しで登録する() {
+    let mut ed = Editor::new(Table::new(&[]));
+    ed.type_keys("/rinze<Space>");
+    assert_eq!(
+        (ed.preedit(), ed.minibuffer().as_deref()),
+        ("▼rinze", Some("[辞書登録] rinze: "))
+    );
+    ed.type_keys("<C-g>");
+    assert_eq!(ed.preedit(), "▽rinze", "登録をやめると英字の見出しに戻る");
+    ed.type_keys("<Space>qrinze");
+    assert_eq!(ed.minibuffer().as_deref(), Some("[辞書登録] rinze: リンゼ"));
+    ed.type_keys("<CR>");
+    assert_eq!(ed.buffer, "リンゼ");
+    assert_eq!(ed.table.registered, [registered("rinze", "リンゼ")]);
+}
+
+#[test]
+fn カタカナモードでも英字の見出しを変換でき_確定後はカタカナに戻る() {
+    let mut ed = Editor::new(Table::new(&[("file", &["ファイル"])]));
+    ed.type_keys("q/file<Space>a");
+    assert_eq!(
+        (ed.buffer.as_str(), ed.mode()),
+        ("ファイルア", Mode::Katakana)
+    );
+}
+
+#[derive(Default)]
+struct Scripted {
+    next: Option<String>,
+}
+
+impl Converter for Scripted {
+    fn candidates(&mut self, q: &Query) -> Vec<String> {
+        let okuri = q.midashi.okuri().map_or("", |o| o.kana.as_str());
+        self.next
+            .take()
+            .map(|word| word.strip_suffix(okuri).unwrap_or(&word).to_string())
+            .into_iter()
+            .collect()
+    }
+
+    fn generate(&mut self, _: &Query) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn register(&mut self, _: &Midashi, _: &str) {}
+
+    fn purge(&mut self, _: &Midashi, _: &str) {}
+}
+
+#[test]
+fn コーパスの打鍵で期待する文になる() {
+    let mut failures = Vec::new();
+    for line in include_str!("fixtures/corpus.tsv")
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+    {
+        let (text, keys) = line.split_once('\t').unwrap();
+        let mut ed = Editor::new(Scripted::default());
+        let mut rest = keys;
+        while let Some((before, after)) = rest.split_once('{') {
+            let (expect, after) = after.split_once('}').unwrap();
+            ed.table.next = Some(expect.to_string());
+            ed.type_keys(before);
+            if !ed.preedit().starts_with(&format!("▼{expect}")) {
+                failures.push(format!("{text}: {before} のあとの表示が {}", ed.preedit()));
+            }
+            rest = after;
+        }
+        ed.type_keys(rest);
+        let flushed = ed.session.flush().commit;
+        ed.buffer.push_str(&flushed);
+        if ed.buffer != text {
+            failures.push(format!("{text}: 実際は {}", ed.buffer));
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }

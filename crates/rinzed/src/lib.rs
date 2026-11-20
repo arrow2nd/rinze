@@ -6,9 +6,9 @@
 //! - `flush() -> response` 入力途中のものを表示どおりに確定する。モードは変えない。
 //! - `reset() -> response` `flush` したうえで、モードをひらがなに戻す。
 //!
-//! `response` は `{handled, commit, preedit, candidates, registration, mode, passthrough}` の map。
+//! `response` は `{handled, commit, preedit, candidates, minibuffer, mode, passthrough}` の map。
 //! `candidates` は一覧の表示中だけ `{items: [[label, word], ...], page, pages}`、
-//! `registration` は辞書登録中だけ `{prompt, text, preedit}` で、それ以外は nil。
+//! `minibuffer` は辞書登録の入力欄か辞書から消すかの問いがあるときだけ `{prompt, text, preedit}` で、それ以外は nil。
 //! `mode` は `hiragana` `katakana` `halfwidth-katakana` `ascii` `fullwidth-latin` のどれか。
 
 pub mod user_dict;
@@ -19,7 +19,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use rinze_dict::Dictionary;
-use rinze_engine::{Converter, Key, Mode, Okuri, Query, Response, Session};
+use rinze_engine::{Converter, Key, Midashi, Mode, Query, Response, Session};
 use rinze_zenz::Zenz;
 use rmpv::Value;
 use user_dict::UserDictionary;
@@ -50,16 +50,9 @@ pub struct Backend<'m> {
     pub zenz: Mutex<Zenz<'m>>,
 }
 
-fn midashi(reading: &str, okuri: Option<&Okuri>) -> String {
-    match okuri {
-        Some(o) => format!("{reading}{}", o.consonant),
-        None => reading.to_string(),
-    }
-}
-
 /// ユーザー辞書の候補にシステム辞書の候補を続け、重複を 1 つにまとめる。
-pub fn lookup(dict: &Dictionary, user: &UserDictionary, query: &Query) -> Vec<String> {
-    let key = midashi(query.reading, query.okuri);
+pub fn lookup(dict: &Dictionary, user: &UserDictionary, midashi: &Midashi) -> Vec<String> {
+    let key = midashi.key();
     let mut words = user.lookup(&key).to_vec();
     for word in dict.lookup(&key) {
         if !words.contains(word) {
@@ -124,15 +117,18 @@ impl<'m> Backend<'m> {
         self.user.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// 候補が 2 件以上あれば zenz の点数で並べ替える。
+    /// 候補が 2 件以上あれば zenz の点数で並べ替える。abbrev の候補は辞書の順のまま返す。
     pub fn candidates(&self, query: &Query) -> Vec<String> {
-        let words = lookup(&self.dict, &self.user(), query);
+        let words = lookup(&self.dict, &self.user(), query.midashi);
+        let Midashi::Kana { reading, okuri } = query.midashi else {
+            return words;
+        };
         if words.len() < 2 {
             return words;
         }
-        let okuri = query.okuri.map_or("", |o| o.kana.as_str());
+        let okuri = okuri.as_ref().map_or("", |o| o.kana.as_str());
         let surfaces: Vec<String> = words.iter().map(|w| format!("{w}{okuri}")).collect();
-        let reading = format!("{}{okuri}", query.reading);
+        let reading = format!("{reading}{okuri}");
         let started = Instant::now();
         let scores = self.zenz().score(query.left_context, &reading, &surfaces);
         match scores {
@@ -154,9 +150,17 @@ impl<'m> Backend<'m> {
     }
 
     /// zenz が生成した表記のうち、読みと送りがなに対応するものを良い順に返す。読みと同じひらがなの表記は除く。
+    /// zenz は読みをかなで受け取るので、abbrev では生成しない。
     pub fn generate(&self, query: &Query) -> Vec<String> {
-        let okuri = query.okuri.map_or("", |o| o.kana.as_str());
-        let reading = format!("{}{okuri}", query.reading);
+        let Midashi::Kana {
+            reading: stem_reading,
+            okuri,
+        } = query.midashi
+        else {
+            return Vec::new();
+        };
+        let okuri = okuri.as_ref().map_or("", |o| o.kana.as_str());
+        let reading = format!("{stem_reading}{okuri}");
         let started = Instant::now();
         let generated = match self
             .zenz()
@@ -180,8 +184,8 @@ impl<'m> Backend<'m> {
                 continue;
             };
             if stem.is_empty()
-                || stem == query.reading
-                || !reads_as(stem, query.reading)
+                || stem == stem_reading
+                || !reads_as(stem, stem_reading)
                 || words.iter().any(|w| w == stem)
             {
                 continue;
@@ -197,11 +201,20 @@ impl<'m> Backend<'m> {
         words
     }
 
-    pub fn register(&self, reading: &str, okuri: Option<&Okuri>, word: &str) {
-        let key = midashi(reading, okuri);
-        match self.user().register(&key, word) {
+    pub fn register(&self, midashi: &Midashi, word: &str) {
+        let key = midashi.key();
+        match self.user().register(midashi, word) {
             Ok(()) => log!("rinzed: {key} /{word}/ を登録した"),
             Err(e) => log!("rinzed: {key} /{word}/ を登録できなかった: {e}"),
+        }
+    }
+
+    pub fn purge(&self, midashi: &Midashi, word: &str) {
+        let key = midashi.key();
+        match self.user().purge(midashi, word) {
+            Ok(true) => log!("rinzed: {key} /{word}/ をユーザー辞書から消した"),
+            Ok(false) => log!("rinzed: {key} /{word}/ はユーザー辞書に無い"),
+            Err(e) => log!("rinzed: {key} /{word}/ を消せなかった: {e}"),
         }
     }
 }
@@ -217,8 +230,12 @@ impl Converter for SharedConverter<'_, '_> {
         self.0.generate(query)
     }
 
-    fn register(&mut self, reading: &str, okuri: Option<&Okuri>, word: &str) {
-        self.0.register(reading, okuri, word)
+    fn register(&mut self, midashi: &Midashi, word: &str) {
+        self.0.register(midashi, word)
+    }
+
+    fn purge(&mut self, midashi: &Midashi, word: &str) {
+        self.0.purge(midashi, word)
     }
 }
 
@@ -318,7 +335,7 @@ fn encode_response(r: &Response) -> Value {
             ("pages".into(), page.pages.into()),
         ])
     });
-    let registration = r.registration.as_ref().map_or(Value::Nil, |line| {
+    let minibuffer = r.minibuffer.as_ref().map_or(Value::Nil, |line| {
         Value::Map(vec![
             ("prompt".into(), line.prompt.as_str().into()),
             ("text".into(), line.text.as_str().into()),
@@ -330,7 +347,7 @@ fn encode_response(r: &Response) -> Value {
         ("commit".into(), r.commit.as_str().into()),
         ("preedit".into(), r.preedit.as_str().into()),
         ("candidates".into(), candidates),
-        ("registration".into(), registration),
+        ("minibuffer".into(), minibuffer),
         ("mode".into(), mode_name(r.mode).into()),
         ("passthrough".into(), r.passthrough.into()),
     ])
@@ -338,13 +355,17 @@ fn encode_response(r: &Response) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use rinze_engine::Okuri;
+
     use super::*;
 
-    fn query<'a>(reading: &'a str, okuri: Option<&'a Okuri>) -> Query<'a> {
-        Query {
-            left_context: "",
-            reading,
-            okuri,
+    fn kana(reading: &str, okuri: Option<(char, &str)>) -> Midashi {
+        Midashi::Kana {
+            reading: reading.into(),
+            okuri: okuri.map(|(consonant, kana)| Okuri {
+                consonant,
+                kana: kana.into(),
+            }),
         }
     }
 
@@ -352,18 +373,24 @@ mod tests {
     fn 送りありは読みと子音で引く() {
         let dict = Dictionary::parse("あt /合/会/\nあ /亜/\n");
         let user = UserDictionary::in_memory();
-        let okuri = Okuri {
-            consonant: 't',
-            kana: "っ".into(),
-        };
         assert_eq!(
-            lookup(&dict, &user, &query("あ", Some(&okuri))),
+            lookup(&dict, &user, &kana("あ", Some(('t', "っ")))),
             ["合", "会"]
         );
-        assert_eq!(lookup(&dict, &user, &query("あ", None)), ["亜"]);
+        assert_eq!(lookup(&dict, &user, &kana("あ", None)), ["亜"]);
         assert!(
-            lookup(&dict, &user, &query("まよねーず", None)).is_empty(),
+            lookup(&dict, &user, &kana("まよねーず", None)).is_empty(),
             "辞書に無い読みに候補を作らない"
+        );
+    }
+
+    #[test]
+    fn abbrev_は英字の見出しで引く() {
+        let dict = Dictionary::parse("file /ファイル/\n");
+        let user = UserDictionary::in_memory();
+        assert_eq!(
+            lookup(&dict, &user, &Midashi::Abbrev("file".into())),
+            ["ファイル"]
         );
     }
 
@@ -371,15 +398,15 @@ mod tests {
     fn ユーザー辞書の語とシステム辞書の語を重複なく合わせる() {
         let dict = Dictionary::parse("あt /合/会/\n");
         let mut user = UserDictionary::in_memory();
-        user.register("あt", "会").unwrap();
-        user.register("あt", "遭").unwrap();
-        let okuri = Okuri {
-            consonant: 't',
-            kana: "っ".into(),
-        };
+        let at = kana("あ", Some(('t', "っ")));
+        user.register(&at, "会").unwrap();
+        user.register(&at, "遭").unwrap();
+        assert_eq!(lookup(&dict, &user, &at), ["遭", "会", "合"]);
+        user.purge(&at, "遭").unwrap();
         assert_eq!(
-            lookup(&dict, &user, &query("あ", Some(&okuri))),
-            ["遭", "会", "合"]
+            lookup(&dict, &user, &at),
+            ["会", "合"],
+            "ユーザー辞書から消した語は出ない"
         );
     }
 

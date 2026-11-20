@@ -1,5 +1,5 @@
 use rinze_dict::Dictionary;
-use rinze_engine::{Okuri, Query};
+use rinze_engine::{Midashi, Okuri, Query};
 use rinze_zenz::{Model, Zenz};
 use rinzed::Backend;
 use rinzed::user_dict::UserDictionary;
@@ -39,10 +39,13 @@ fn 試作と同じ順位に並べる() {
                 consonant,
                 kana: case.okuri.clone(),
             });
+            let midashi = Midashi::Kana {
+                reading: case.yomi.clone(),
+                okuri,
+            };
             let got = backend.candidates(&Query {
                 left_context: &case.left,
-                reading: &case.yomi,
-                okuri: okuri.as_ref(),
+                midashi: &midashi,
             });
             (got != case.spike_order).then(|| {
                 format!(

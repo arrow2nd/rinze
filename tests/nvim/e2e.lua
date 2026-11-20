@@ -144,6 +144,51 @@ check('止めた rinzed のソケットが残っている', vim.uv.fs_stat(socke
 text, snaps = type_in_new_buffer('Rinze<Space>' .. snapshot)
 check('残ったソケットを片付けて起動し直した rinzed でも登録した語が出る', snaps[1].preedit, '▼' .. word)
 
+
+text, snaps = type_in_new_buffer('Rinze<Space>X' .. snapshot .. 'yes<CR>' .. snapshot)
+print('X で消す途中: ' .. vim.inspect(snaps))
+check('X で消すかを問う', snaps[1].list, 'りんぜ /' .. word .. '/ を辞書から削除します。良いですか？ (yes or no) ')
+check('yes で消して何も確定しない', { snaps[2].preedit, snaps[2].list, text }, { '', nil, '' })
+check('ユーザー辞書からも消える', table.concat(vim.fn.readfile(user_dict), '\n'):find('りんぜ /', 1, true), nil)
+
+local position_snapshot = '<F8>'
+vim.keymap.set('i', position_snapshot, function()
+  local marks = vim.api.nvim_buf_get_extmarks(0, vim.api.nvim_create_namespace('rinze'), 0, -1, {})
+  table.insert(snapshots, {
+    preedit = rinze.preedit(),
+    cursor_col = vim.api.nvim_win_get_cursor(0)[2],
+    preedit_col = marks[1] and marks[1][3],
+  })
+end)
+
+local function type_into(lines, keys, after)
+  snapshots = {}
+  vim.cmd('enew!')
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
+  vim.api.nvim_win_set_cursor(0, { 1, 0 })
+  vim.api.nvim_feedkeys(vim.keycode(keys .. '<Esc>' .. (after or '')), 'x', false)
+  return buffer_text(), snapshots
+end
+
+text, snaps = type_into({ 'あいう' }, 'laAsita' .. position_snapshot .. '<Space>' .. position_snapshot .. 'ha')
+check('全角文字の間の未確定文字列はカーソルの位置に出る', snaps[1], { preedit = '▽あした', cursor_col = #'あい', preedit_col = #'あい' })
+check('候補もカーソルの位置に出る', snaps[2], { preedit = '▼明日', cursor_col = #'あい', preedit_col = #'あい' })
+check('全角文字の間に確定する', text, 'あい明日はう')
+text = type_into({ 'abc' }, 'IAsita<Space><CR>')
+check('行頭に確定する', text, '明日abc')
+text = type_into({ '全角' }, 'Adesu')
+check('全角文字の直後に確定する', text, '全角です')
+text = type_into({ 'xy' }, 'aAsi<Left>ta')
+check('カーソルを動かすと未確定文字列を元の位置に確定する', text, 'たxあしy')
+
+text = type_into({ '' }, 'iAsita<Space>ha', '.')
+check('. で確定した文字列を繰り返す', text, '明日明日はは')
+text = type_into({ '' }, 'iAsita<Space>ha', 'u')
+check('u で 1 回の挿入をまとめて戻す', text, '')
+
+text = type_into({ '' }, 'iQasita<Space>da/file<Space>wo')
+check('Q で見出しを始め、/ で英字の見出しを変換する', text, '明日だファイルを')
+
 if failures > 0 then
   print(failures .. ' 件失敗')
   os.exit(1)
