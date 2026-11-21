@@ -83,18 +83,16 @@ pub enum Learning {
 pub fn load_dictionaries<P: AsRef<Path>>(
     paths: impl IntoIterator<Item = P>,
 ) -> Result<Dictionary, String> {
-    let mut merged: Option<Dictionary> = None;
-    for path in paths {
-        let path = path.as_ref();
-        let dict = Dictionary::from_bytes(
-            &std::fs::read(path).map_err(|e| format!("辞書 {} を読めない: {e}", path.display()))?,
-        );
-        match &mut merged {
-            Some(merged) => merged.merge(dict),
-            None => merged = Some(dict),
-        }
-    }
-    Ok(merged.unwrap_or_default())
+    let bytes = paths
+        .into_iter()
+        .map(|path| {
+            let path = path.as_ref();
+            std::fs::read(path).map_err(|e| format!("辞書 {} を読めない: {e}", path.display()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Dictionary::merged(
+        bytes.iter().map(|b| rinze_dict::decode(b)),
+    ))
 }
 
 /// ユーザー辞書の候補にシステム辞書の候補を続け、重複を 1 つにまとめる。ユーザー辞書で外した語はシステム辞書から取らない。

@@ -2,11 +2,51 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::ops::Range;
 
+/// 見出しと候補の文字列を 1 つの `text` に詰め、見出しの順に並べた `entries` を二分探索で引く。
+/// 文字列ごとに確保しないので、7 つの辞書を合わせても HashMap と String で持つときの 3 割ほどで済む。
 #[derive(Debug, Default)]
 pub struct Dictionary {
-    written_candidates: HashMap<String, Vec<String>>,
+    text: String,
+    entries: Vec<Entry>,
+    written: Vec<Span>,
     ignored: HashMap<String, Vec<String>>,
+}
+
+/// `text` の中の範囲。
+#[derive(Debug, Clone, Copy)]
+struct Span {
+    start: u32,
+    end: u32,
+}
+
+impl Span {
+    fn push(text: &mut String, s: &str) -> Self {
+        let start = index(text.len());
+        text.push_str(s);
+        Self {
+            start,
+            end: index(text.len()),
+        }
+    }
+
+    fn of(self, text: &str) -> &str {
+        &text[self.start as usize..self.end as usize]
+    }
+}
+
+#[derive(Debug)]
+struct Entry {
+    key: Span,
+    written: Range<u32>,
+}
+
+/// 読み込んだ 1 行。`source` は渡された辞書の番号。
+struct ParsedLine {
+    key: Span,
+    written: Range<u32>,
+    source: usize,
 }
 
 /// UTF-8 として読めなければ EUC-JP として読む。SKK-JISYO.L などの配布物は EUC-JP。
@@ -23,60 +63,107 @@ impl Dictionary {
     }
 
     pub fn parse(text: &str) -> Self {
-        let mut dict = Self::default();
-        for (key, rest) in text
-            .lines()
-            .filter(|line| !line.starts_with(';'))
-            .filter_map(|line| line.split_once(" /"))
-        {
-            let line = parse_line(rest);
-            if !line.written.is_empty() {
-                dict.written_candidates
-                    .insert(key.to_string(), line.written);
-            }
-            if !line.ignored.is_empty() {
-                dict.ignored.insert(key.to_string(), line.ignored);
-            }
-        }
-        dict
+        Self::merged([text])
     }
 
-    /// 同じ見出しの `later` の候補を、この辞書の候補のあとに重複なく続ける。重複した語の書き方 (注釈) はこの辞書のものを残す。
-    pub fn merge(&mut self, later: Dictionary) {
-        for (key, written) in later.written_candidates {
-            let merged = self.written_candidates.entry(key).or_default();
-            for item in written {
-                if !merged.iter().any(|w| word_of(w) == word_of(&item)) {
-                    merged.push(item);
+    /// 辞書を渡した順に読んで 1 つにする。同じ見出しの候補は、先の辞書の候補のあとに重複なく続ける。
+    /// 重複した語の書き方 (注釈) は先の辞書のものを残す。1 つの辞書に同じ見出しの行が 2 つあれば、後の行を使う。
+    pub fn merged<T: AsRef<str>>(texts: impl IntoIterator<Item = T>) -> Self {
+        let mut text = String::new();
+        let mut ignored: HashMap<String, Vec<String>> = HashMap::new();
+        let mut lines = Vec::new();
+        let mut parsed = Vec::new();
+        for (source, dict) in texts.into_iter().enumerate() {
+            let mut ignored_here = HashMap::new();
+            for (key, rest) in dict
+                .as_ref()
+                .lines()
+                .filter(|line| !line.starts_with(';'))
+                .filter_map(|line| line.split_once(" /"))
+            {
+                let line = parse_line(rest);
+                if !line.written.is_empty() {
+                    let start = index(parsed.len());
+                    parsed.extend(line.written.iter().map(|w| Span::push(&mut text, w)));
+                    lines.push(ParsedLine {
+                        key: Span::push(&mut text, key),
+                        written: start..index(parsed.len()),
+                        source,
+                    });
+                }
+                if !line.ignored.is_empty() {
+                    ignored_here.insert(key, line.ignored);
+                }
+            }
+            for (key, words) in ignored_here {
+                let merged = ignored.entry(key.to_string()).or_default();
+                for word in words {
+                    if !merged.contains(&word) {
+                        merged.push(word);
+                    }
                 }
             }
         }
-        for (key, words) in later.ignored {
-            let merged = self.ignored.entry(key).or_default();
-            for word in words {
-                if !merged.contains(&word) {
-                    merged.push(word);
+        lines.sort_by(|a, b| a.key.of(&text).cmp(b.key.of(&text)));
+        let mut entries = Vec::new();
+        let mut written: Vec<Span> = Vec::with_capacity(parsed.len());
+        for run in lines.chunk_by(|a, b| a.key.of(&text) == b.key.of(&text)) {
+            let start = written.len();
+            for (i, line) in run.iter().enumerate() {
+                if run
+                    .get(i + 1)
+                    .is_some_and(|next| next.source == line.source)
+                {
+                    continue;
+                }
+                for &span in &parsed[line.written.start as usize..line.written.end as usize] {
+                    let word = word_of(span.of(&text));
+                    if !written[start..]
+                        .iter()
+                        .any(|w| word_of(w.of(&text)) == word)
+                    {
+                        written.push(span);
+                    }
                 }
             }
+            entries.push(Entry {
+                key: run[0].key,
+                written: index(start)..index(written.len()),
+            });
         }
+        text.shrink_to_fit();
+        entries.shrink_to_fit();
+        written.shrink_to_fit();
+        Self {
+            text,
+            entries,
+            written,
+            ignored,
+        }
+    }
+
+    /// 見出しの候補の、辞書での書き方 (注釈を含む) を辞書の順に返す。
+    fn written_of(&self, key: &str) -> impl Iterator<Item = &str> {
+        let found = self
+            .entries
+            .binary_search_by(|e| e.key.of(&self.text).cmp(key))
+            .ok();
+        let range = found.map_or(0..0, |i| {
+            let written = &self.entries[i].written;
+            written.start as usize..written.end as usize
+        });
+        self.written[range].iter().map(|span| span.of(&self.text))
     }
 
     /// 見出しの候補を辞書の順に、注釈を除いて返す。
     pub fn lookup(&self, key: &str) -> impl Iterator<Item = &str> {
-        self.written_candidates
-            .get(key)
-            .into_iter()
-            .flatten()
-            .map(|written| word_of(written))
+        self.written_of(key).map(word_of)
     }
 
     /// 候補 `word` の辞書での書き方 (注釈を含む)。
     pub fn written(&self, key: &str, word: &str) -> Option<&str> {
-        self.written_candidates
-            .get(key)?
-            .iter()
+        self.written_of(key)
             .find(|written| word_of(written) == word)
-            .map(String::as_str)
     }
 
     /// 見出しの行の `(skk-ignore-dic-word ...)` に書かれた語 (注釈を除く)。
@@ -238,16 +325,20 @@ fn join_lines(lines: Vec<String>) -> String {
     out
 }
 
+fn index(n: usize) -> u32 {
+    u32::try_from(n).expect("辞書は 4 GiB に収まる")
+}
+
 fn word_of(written: &str) -> &str {
     written.split(';').next().unwrap_or("")
 }
 
-struct Line {
-    written: Vec<String>,
+struct Line<'a> {
+    written: Vec<&'a str>,
     ignored: Vec<String>,
 }
 
-fn parse_line(rest: &str) -> Line {
+fn parse_line(rest: &str) -> Line<'_> {
     let mut line = Line {
         written: Vec::new(),
         ignored: Vec::new(),
@@ -276,9 +367,7 @@ fn parse_line(rest: &str) -> Line {
         if word.is_empty() || word.starts_with('(') {
             continue;
         }
-        if !line.written.iter().any(|w| word_of(w) == word) {
-            line.written.push(item.to_string());
-        }
+        line.written.push(item);
     }
     line
 }
@@ -369,11 +458,11 @@ mod tests {
 
     #[test]
     fn 辞書を合わせると同じ見出しの候補を渡した順に重複なく並べる() {
-        let mut dict = Dictionary::parse("たなか /田中;姓/田仲;姓/\nあした /明日/\n");
-        dict.merge(Dictionary::parse(
+        let dict = Dictionary::merged([
+            "たなか /田中;姓/田仲;姓/\nあした /明日/\n",
             "たなか /田中;人名/多中/\nしんじゅく /新宿/\nあした /(skk-ignore-dic-word \"朝\")/\n",
-        ));
-        dict.merge(Dictionary::parse("たなか /田中町/多中/\n"));
+            "たなか /田中町/多中/\n",
+        ]);
         assert_eq!(words(&dict, "たなか"), ["田中", "田仲", "多中", "田中町"]);
         assert_eq!(words(&dict, "しんじゅく"), ["新宿"]);
         assert_eq!(
@@ -382,6 +471,13 @@ mod tests {
             "重複した語は先の辞書の書き方を残す"
         );
         assert_eq!(dict.ignored("あした"), ["朝"]);
+    }
+
+    #[test]
+    fn 一つの辞書に同じ見出しの行が二つあれば後の行を使う() {
+        let dict = Dictionary::merged(["あさ /麻/\nあした /明日/\nあさ /朝/浅/\n", "あさ /麻/\n"]);
+        assert_eq!(words(&dict, "あさ"), ["朝", "浅", "麻"]);
+        assert_eq!(words(&dict, "あした"), ["明日"]);
     }
 
     #[test]

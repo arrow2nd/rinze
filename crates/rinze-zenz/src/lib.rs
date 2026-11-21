@@ -1,8 +1,9 @@
 //! zenz (GGUF) で、左文脈と読みを与えたときの各候補の対数尤度を計算する。
 //!
 //! プロンプトは `[<CTX> 左文脈末尾 40 字] <IN> 読み (カタカナ) <OUT>` で、BOS を付けて 1 系列で decode する。
-//! その KV を各候補の系列へ複製し、全候補のトークンを 1 バッチで decode する。
 //! 点数は候補トークン列の対数尤度の和で、EOS は含めない。
+//! 候補の最初のトークンはプロンプトの logits で点数をつける。2 トークン以上の候補は、プロンプトの KV を候補ごとの系列へ複製し、
+//! 最後を除くトークンをまとめて decode する。最後のトークンのあとの logits は使わないので decode しない。
 //!
 //! [`Zenz::generate`] は同じプロンプトから表記をビーム探索で生成する。
 
@@ -26,8 +27,13 @@ const TAG_OUTPUT: char = '\u{EE01}';
 const TAG_CONTEXT: char = '\u{EE02}';
 
 const LEFT_CONTEXT_CHARS: usize = 40;
-const N_CTX: u32 = 1024;
+// KV キャッシュは N_CTX に比例して確保と同時に埋まる (1024 で 36 MiB)。点数づけはプロンプトと 64 トークンしか置かず、
+// 生成のビームは接頭辞を共有するので、512 でも左文脈 40 字のまま 80 字を超える読みまで生成できる
+const N_CTX: u32 = 512;
 const N_SEQ_MAX: u32 = 64;
+// llama.cpp は出力 (logits) の領域を n_seq_max 件ぶん確保し、1 回の decode でそれを超えると広げたまま縮めない。
+// 候補の decode をこの件数に収めれば、出力の領域は最初の 1.5 MB のままで済む
+const OUTPUTS_PER_DECODE: usize = N_SEQ_MAX as usize;
 const MAX_TOKENS_BEYOND_READING: usize = 4;
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
@@ -136,49 +142,36 @@ impl<'m> Zenz<'m> {
         self.ctx.decode(&mut self.batch)?;
         let prompt_logits = self.ctx.get_logits_ith(self.batch.n_tokens() - 1).to_vec();
 
-        let mut scores = Vec::with_capacity(cands.len());
-        for group in cands.chunks((N_SEQ_MAX - 1) as usize) {
-            for s in 1..=group.len() as i32 {
-                self.ctx.clear_kv_cache_seq(Some(s as u32), None, None)?;
-                self.ctx.copy_kv_cache_seq(0, s, Some(0), Some(p as u32))?;
-            }
-            let batch_indices = self.add_candidates_like_spike(group, p)?;
-            if self.batch.n_tokens() > 0 {
-                self.ctx.decode(&mut self.batch)?;
-            }
-            for (toks, indices) in group.iter().zip(&batch_indices) {
-                let Some(&head) = toks.first() else {
-                    scores.push(0.0);
-                    continue;
-                };
-                let predicting_next = &indices[..indices.len() - 1];
-                let mut sum = log_prob(&prompt_logits, head);
-                for (&bi, &next) in predicting_next.iter().zip(&toks[1..]) {
-                    sum += log_prob(self.ctx.get_logits_ith(bi), next);
+        let mut scores: Vec<f64> = cands
+            .iter()
+            .map(|toks| {
+                toks.first()
+                    .map_or(0.0, |&head| log_prob(&prompt_logits, head))
+            })
+            .collect();
+        let continued: Vec<usize> = (0..cands.len()).filter(|&i| cands[i].len() > 1).collect();
+        for group in groups(&continued, |i| cands[i].len() - 1) {
+            self.ctx.clear_kv_cache_seq(None, Some(p as u32), None)?;
+            self.batch.clear();
+            let mut firsts = Vec::with_capacity(group.len());
+            for (g, &i) in group.iter().enumerate() {
+                let seq = g as i32 + 1;
+                self.ctx
+                    .copy_kv_cache_seq(0, seq, Some(0), Some(p as u32))?;
+                firsts.push(self.batch.n_tokens());
+                let toks = &cands[i];
+                for (k, &t) in toks[..toks.len() - 1].iter().enumerate() {
+                    self.batch.add(t, p + k as i32, &[seq], true)?;
                 }
-                scores.push(sum);
+            }
+            self.ctx.decode(&mut self.batch)?;
+            for (&i, &first) in group.iter().zip(&firsts) {
+                for (k, &next) in cands[i][1..].iter().enumerate() {
+                    scores[i] += log_prob(self.ctx.get_logits_ith(first + k as i32), next);
+                }
             }
         }
         Ok(scores)
-    }
-
-    fn add_candidates_like_spike(
-        &mut self,
-        group: &[Vec<LlamaToken>],
-        prompt_len: i32,
-    ) -> Result<Vec<Vec<i32>>> {
-        self.batch.clear();
-        let mut batch_indices = Vec::with_capacity(group.len());
-        for (g, toks) in group.iter().enumerate() {
-            let seq = g as i32 + 1;
-            let mut indices = Vec::with_capacity(toks.len());
-            for (k, &t) in toks.iter().enumerate() {
-                indices.push(self.batch.n_tokens());
-                self.batch.add(t, prompt_len + k as i32, &[seq], true)?;
-            }
-            batch_indices.push(indices);
-        }
-        Ok(batch_indices)
     }
 
     /// `reading` (ひらがな、送りがなを含む) の表記を、対数尤度の高い順に最大 `width` 件生成する。
@@ -287,6 +280,30 @@ fn to_model_text(text: &str) -> String {
 
 fn from_model_text(text: &str) -> String {
     text.replace('　', " ")
+}
+
+/// `items` を、1 回の decode に載せる組に分ける。組は `N_SEQ_MAX - 1` 件までで、`outputs` の和が `OUTPUTS_PER_DECODE` を超えない。
+/// 1 件で超えるものは 1 件の組にする。
+fn groups(items: &[usize], outputs: impl Fn(usize) -> usize) -> impl Iterator<Item = &[usize]> {
+    let mut rest = items;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let mut total = 0;
+        let len = rest
+            .iter()
+            .take(N_SEQ_MAX as usize - 1)
+            .take_while(|&&i| {
+                total += outputs(i);
+                total <= OUTPUTS_PER_DECODE
+            })
+            .count()
+            .max(1);
+        let (group, tail) = rest.split_at(len);
+        rest = tail;
+        Some(group)
+    })
 }
 
 fn prune_below_worst_done(
