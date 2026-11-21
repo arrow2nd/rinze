@@ -1637,3 +1637,27 @@ fn 古い版への選択と候補に無い語の選択は何もしない() {
     assert_eq!(ed.preedit(), "▼明日", "候補の表示中は選べない");
     assert!(ed.table.committed.is_empty());
 }
+
+#[test]
+fn 辞書登録の入れ子は上限で止まりスタックをあふれさせない() {
+    let mut ed = Editor::new(Table::new(&[("あ", &["亜"])]));
+    for _ in 0..rinze_engine::MAX_REGISTRATION_DEPTH + 10 {
+        ed.type_keys("/x<Space>");
+    }
+    let expected_prefix = format!(
+        "{}辞書登録{} ",
+        "[".repeat(rinze_engine::MAX_REGISTRATION_DEPTH),
+        "]".repeat(rinze_engine::MAX_REGISTRATION_DEPTH)
+    );
+    let mb = ed.minibuffer().expect("上限までは辞書登録に入る");
+    assert!(mb.starts_with(&expected_prefix), "{mb}");
+
+    // 候補を送り切った経路 (henkan) でも上限を超えない
+    ed.type_keys("<C-g>A<Space><Space>");
+    let mb = ed.minibuffer().expect("最深部の辞書登録にとどまる");
+    assert!(mb.starts_with(&expected_prefix), "{mb}");
+    assert!(mb.ends_with("▼亜"), "{mb}");
+
+    let res = ed.discard();
+    assert!(res.minibuffer.is_none());
+}

@@ -80,6 +80,7 @@ impl Dictionary {
                 .lines()
                 .filter(|line| !line.starts_with(';'))
                 .filter_map(|line| line.split_once(" /"))
+                .filter(|(key, _)| !key.chars().any(char::is_control))
             {
                 let line = parse_line(rest);
                 if !line.written.is_empty() {
@@ -194,16 +195,20 @@ pub enum Purge<'a> {
     Ignore(&'a str),
 }
 
+fn is_unwritable_key(key: &str) -> bool {
+    key.is_empty() || key.starts_with(';') || key.contains(' ') || key.chars().any(char::is_control)
+}
+
 /// SKK 辞書のテキストに語を足したテキストを返す。ユーザー辞書の書き換えに使う。
 ///
 /// 同じ見出しの行があれば語をその候補の先頭に置き (既にあれば先頭へ移し)、無ければ `section` の節の先頭に行を足す。
 /// `(skk-ignore-dic-word ...)` に語があれば外す。ほかの行は注釈や式も含めてそのまま残す。`key` は送りありなら `あt` のように子音で終わる。
-/// 見出しか語が SKK 辞書に書けない (見出しが空、`;` で始まる、空白を含む。語が `/` `;` を含む、式や送りがなブロックと見分けられない) なら None を返す。
+/// 見出しか語が SKK 辞書に書けない (見出しが空、`;` で始まる、空白や制御文字を含む。語が `/` `;` や制御文字を含む、式や送りがなブロックと見分けられない) なら None を返す。
 pub fn add_entry(text: &str, section: Section, key: &str, word: &str) -> Option<String> {
-    let unwritable_key = key.is_empty() || key.starts_with(';') || key.contains([' ', '\n']);
-    if unwritable_key
+    if is_unwritable_key(key)
         || word.is_empty()
-        || word.contains(['/', ';', '\n'])
+        || word.contains(['/', ';'])
+        || word.chars().any(char::is_control)
         || word.starts_with(['(', '['])
     {
         return None;
@@ -244,6 +249,14 @@ pub fn purge_entry(
     word: &str,
     purge: Purge,
 ) -> Option<String> {
+    if is_unwritable_key(key) || word.is_empty() || word.chars().any(char::is_control) {
+        return None;
+    }
+    if let Purge::Ignore(written) = purge
+        && (written.is_empty() || written.chars().any(char::is_control))
+    {
+        return None;
+    }
     let prefix = format!("{key} /");
     let mut lines = lines_of(text);
     let index = lines.iter().position(|l| l.starts_with(&prefix));
@@ -363,8 +376,8 @@ fn parse_line(rest: &str) -> Line<'_> {
             continue;
         }
         let word = word_of(item);
-        // `(concat ...)` などの Lisp 式の候補は評価しないので捨てる
-        if word.is_empty() || word.starts_with('(') {
+        // `(concat ...)` などの Lisp 式の候補は評価しないので捨てる。制御文字を含む候補も打鍵として誤動作しうるので捨てる
+        if word.is_empty() || word.starts_with('(') || item.chars().any(char::is_control) {
             continue;
         }
         line.written.push(item);
@@ -538,16 +551,49 @@ mod tests {
 
     #[test]
     fn 辞書の書式で書けない見出しと語は足さない() {
-        for word in ["a/b", "注;釈", "(concat)", "[る", ""] {
+        for word in [
+            "a/b", "注;釈", "(concat)", "[る", "", "a\x1bb", "a\rb", "a\0b",
+        ] {
             assert_eq!(
                 add_entry("", Section::OkuriNasi, "あ", word),
                 None,
-                "{word}"
+                "{word:?}"
             );
         }
-        for key in ["", ";x", "a b"] {
-            assert_eq!(add_entry("", Section::OkuriNasi, key, "語"), None, "{key}");
+        for key in ["", ";x", "a b", "あ\nい", "あ\x1b"] {
+            assert_eq!(
+                add_entry("", Section::OkuriNasi, key, "語"),
+                None,
+                "{key:?}"
+            );
         }
+    }
+
+    #[test]
+    fn 制御文字を含む候補と見出しは読み込みでも削除でも無視する() {
+        let dict = Dictionary::merged(["ぬぺ /正常/V\x1b:q\rq/注釈;\x1b/安全/\n\
+             あ\x1b /危険/\n"]);
+        assert_eq!(words(&dict, "ぬぺ"), ["正常", "安全"]);
+        assert!(words(&dict, "あ\x1b").is_empty());
+
+        assert_eq!(
+            purge_entry("", Section::OkuriNasi, "あ\nい", "語", Purge::Ignore("語")),
+            None
+        );
+        assert_eq!(
+            purge_entry(
+                "",
+                Section::OkuriNasi,
+                "あ",
+                "語\x1b",
+                Purge::Ignore("語\x1b")
+            ),
+            None
+        );
+        assert_eq!(
+            purge_entry("", Section::OkuriNasi, "あ", "語", Purge::Ignore("語;\x1b")),
+            None
+        );
     }
 
     #[test]

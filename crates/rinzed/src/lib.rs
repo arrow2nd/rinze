@@ -114,7 +114,11 @@ pub fn lookup(dict: &Dictionary, user: &UserDictionary, midashi: &Midashi) -> Ve
 
 /// 表記 `surface` が読み `reading` (ひらがな) に対応しうるか。
 /// 表記の中のかなは読みの同じ位置のかなと一致し、かな以外 (漢字や英字) の連なりは読みの 1 字以上に当たるものとして調べる。
+/// 制御文字を含む表記は受け付けない。
 pub fn reads_as(surface: &str, reading: &str) -> bool {
+    if surface.chars().any(char::is_control) {
+        return false;
+    }
     let reading: Vec<char> = reading.chars().collect();
     let mut reach = vec![false; reading.len() + 1];
     reach[0] = true;
@@ -400,16 +404,14 @@ pub fn serve(stream: UnixStream, backend: &Backend) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = BufWriter::new(stream);
     let mut session = Session::default();
-    loop {
-        let message = match rmpv::decode::read_value(&mut reader) {
-            Ok(v) => v,
-            Err(rmpv::decode::Error::InvalidMarkerRead(e))
-                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
-                return Ok(());
-            }
-            Err(e) => return Err(std::io::Error::other(e)),
-        };
+    let mut frame = Vec::new();
+    while rinze_socket::frame::read_frame(
+        &mut reader,
+        rinze_socket::frame::MAX_MESSAGE_BYTES,
+        &mut frame,
+    )? {
+        let message =
+            rmpv::decode::read_value(&mut frame.as_slice()).map_err(std::io::Error::other)?;
         let Some([kind, msgid, method, params]) = message.as_array().map(Vec::as_slice) else {
             continue;
         };
@@ -430,6 +432,7 @@ pub fn serve(stream: UnixStream, backend: &Backend) -> std::io::Result<()> {
         rmpv::encode::write_value(&mut writer, &reply).map_err(std::io::Error::other)?;
         writer.flush()?;
     }
+    Ok(())
 }
 
 fn dispatch(
@@ -649,6 +652,8 @@ mod tests {
             ("あした。", "あした"),
             ("会え", "あ"),
             ("", "あ"),
+            ("会\x1b", "あ"),
+            ("明日\r", "あした"),
         ] {
             assert!(
                 !reads_as(surface, reading),

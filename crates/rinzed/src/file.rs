@@ -1,6 +1,11 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+const TEMP_ATTEMPTS: usize = 64;
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn rewrite(
     path: &Path,
@@ -14,6 +19,7 @@ pub(crate) fn rewrite(
         .create(true)
         .truncate(false)
         .write(true)
+        .mode(0o600)
         .open(with_suffix(path, ".lock"))?;
     lock.lock()?;
     let latest = read_or_empty(path)?;
@@ -32,12 +38,39 @@ pub(crate) fn read_or_empty(path: &Path) -> io::Result<String> {
     }
 }
 
+fn create_temp(path: &Path) -> io::Result<(PathBuf, File)> {
+    let pid = std::process::id();
+    for _ in 0..TEMP_ATTEMPTS {
+        let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp = with_suffix(path, &format!(".tmp.{pid}.{seq}"));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)
+        {
+            Ok(file) => return Ok((tmp, file)),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "一時ファイルを作れない",
+    ))
+}
+
 fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let tmp = with_suffix(path, &format!(".tmp.{}", std::process::id()));
-    let mut file = File::create(&tmp)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    fs::rename(&tmp, path)?;
+    let (tmp, mut file) = create_temp(path)?;
+    let write_result = file.write_all(bytes).and_then(|()| file.sync_all());
+    if let Err(e) = write_result {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
     if let Some(dir) = path.parent() {
         // rename 自体を永続化する
         File::open(dir)?.sync_all()?;

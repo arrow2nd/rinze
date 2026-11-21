@@ -146,7 +146,8 @@ const char *leftContextName(RinzeLeftContext origin) {
 class RinzeEngine;
 
 // 入力欄 1 つぶんの rinzed の接続。表示は最後の応答をそのまま写し、入力の状態は rinzed だけが持つ。
-class RinzeState final : public fcitx::InputContextProperty {
+class RinzeState final : public fcitx::InputContextProperty,
+                         public fcitx::TrackableObject<RinzeState> {
 public:
     RinzeState(RinzeEngine &engine, InputContext &ic);
 
@@ -177,14 +178,19 @@ private:
 
 class RinzeCandidate final : public fcitx::CandidateWord {
 public:
-    RinzeCandidate(RinzeState &state, std::string key, std::string word)
-        : CandidateWord(Text(std::move(word))), state_(state),
+    RinzeCandidate(fcitx::TrackableObjectReference<RinzeState> state,
+                   std::string key, std::string word)
+        : CandidateWord(Text(std::move(word))), state_(std::move(state)),
           key_(std::move(key)) {}
 
-    void select(InputContext *) const override { state_.press(key_); }
+    void select(InputContext *) const override {
+        if (auto *state = state_.get()) {
+            state->press(key_);
+        }
+    }
 
 private:
-    RinzeState &state_;
+    fcitx::TrackableObjectReference<RinzeState> state_;
     std::string key_;
 };
 
@@ -192,14 +198,14 @@ class RinzePage final : public fcitx::CandidateList,
                         public fcitx::PageableCandidateList {
 public:
     RinzePage(RinzeState &state, const RinzeResponse *response)
-        : state_(state), page_(rinze_response_page(response)),
+        : state_(state.watch()), page_(rinze_response_page(response)),
           pages_(rinze_response_pages(response)) {
         setPageable(this);
         for (size_t i = 0; i < rinze_response_candidate_count(response); i++) {
             std::string key = rinze_response_candidate_label(response, i);
             labels_.emplace_back(key + ":");
             words_.push_back(std::make_unique<RinzeCandidate>(
-                state, key, rinze_response_candidate_word(response, i)));
+                state_, key, rinze_response_candidate_word(response, i)));
         }
     }
 
@@ -216,14 +222,22 @@ public:
     // x は最初のページでも、その場に 1 件ずつ出す表示に戻る
     bool hasPrev() const override { return true; }
     bool hasNext() const override { return page_ + 1 < pages_; }
-    void prev() override { state_.press("x"); }
-    void next() override { state_.press("space"); }
+    void prev() override {
+        if (auto *state = state_.get()) {
+            state->press("x");
+        }
+    }
+    void next() override {
+        if (auto *state = state_.get()) {
+            state->press("space");
+        }
+    }
     bool usedNextBefore() const override { return false; }
     int totalPages() const override { return static_cast<int>(pages_); }
     int currentPage() const override { return static_cast<int>(page_); }
 
 private:
-    RinzeState &state_;
+    fcitx::TrackableObjectReference<RinzeState> state_;
     size_t page_;
     size_t pages_;
     std::vector<Text> labels_;
@@ -324,6 +338,9 @@ public:
                   fcitx::KeyEvent &event) override {
         const auto &key = event.key();
         if (event.isRelease() || key.isModifier()) {
+            return;
+        }
+        if (event.inputContext()->capabilityFlags().test(CapabilityFlag::Password)) {
             return;
         }
         auto *s = state(event.inputContext());
@@ -469,7 +486,12 @@ bool RinzeState::press(std::string key) {
     const char *surrounding = nullptr;
     size_t cursor = 0;
     const char *missing = "capability なし";
-    if (ic_.capabilityFlags().test(CapabilityFlag::SurroundingText)) {
+    const auto caps = ic_.capabilityFlags();
+    const bool sensitive =
+        caps.test(CapabilityFlag::Password) || caps.test(CapabilityFlag::Sensitive);
+    if (sensitive) {
+        missing = "sensitive";
+    } else if (caps.test(CapabilityFlag::SurroundingText)) {
         const auto &s = ic_.surroundingText();
         missing = "invalid";
         if (s.isValid()) {

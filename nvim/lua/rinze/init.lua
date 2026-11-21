@@ -1,10 +1,13 @@
 local M = {}
 
+local rpc = require('rinze.rpc')
+
 local config = {
   -- 接続できなかったときに起動するコマンド。`--socket` は自動で足す。
   cmd = { 'rinzed' },
   socket = nil,
   startup_timeout = 30000,
+  request_timeout = 10000,
   -- true なら見出しの入力中に変換候補を blink.cmp のメニューに出す
   blink = false,
   -- status() が返す、モードごとの表示
@@ -19,83 +22,111 @@ local config = {
 
 local ns = vim.api.nvim_create_namespace('rinze')
 
-local function try_connect(path)
-  local ok, chan = pcall(vim.fn.sockconnect, 'pipe', path, { rpc = true })
-  if ok and chan > 0 then
-    return chan
-  end
-end
-
 local EXIT_ANOTHER_RINZED_SERVES = 0
+local STDERR_MAX_LINES = 4
+local MAX_LEFT_CONTEXT_CHARS = 40
 
 local function socket_path()
   return config.socket or require('rinze.socket').default()
 end
 
--- rinzed は接続ごとに入力状態を持つので、入力の場所ごとに接続を分ける
-local function connect(session)
-  -- 常駐プロセスが落ちて閉じた接続は情報が空になるので、つなぎ直す
-  if session.chan and next(vim.api.nvim_get_chan_info(session.chan)) then
-    return session.chan
+local function append_stderr(state, data)
+  if not state.active or not data then
+    return
   end
-  local path = socket_path()
-  local chan = try_connect(path)
+  for i, chunk in ipairs(data) do
+    if i == 1 and #state.lines > 0 then
+      state.lines[#state.lines] = state.lines[#state.lines] .. chunk
+    else
+      table.insert(state.lines, chunk)
+    end
+  end
+  while #state.lines > STDERR_MAX_LINES + 1 do
+    table.remove(state.lines, 1)
+  end
+end
+
+local function spawn_rinzed(path)
+  if vim.fn.executable(config.cmd[1]) ~= 1 then
+    error(
+      'rinze: '
+        .. path
+        .. ' に接続できず、起動コマンド '
+        .. config.cmd[1]
+        .. ' も見つからない (setup の cmd で指定する)'
+    )
+  end
+  local cmd = vim.list_extend(vim.deepcopy(config.cmd), { '--socket', path })
+  local exit_code = nil
+  local stderr = { active = true, lines = {} }
+  local job = vim.fn.jobstart(cmd, {
+    detach = true,
+    on_stderr = function(_, data)
+      append_stderr(stderr, data)
+    end,
+    on_exit = function(_, code)
+      exit_code = code
+    end,
+  })
+  if job <= 0 then
+    error('rinze: 常駐プロセスを起動できない: ' .. table.concat(cmd, ' '))
+  end
+  local function failed_to_start()
+    return exit_code ~= nil and exit_code ~= EXIT_ANOTHER_RINZED_SERVES
+  end
+  local chan, fatal_err = nil, nil
+  vim.wait(config.startup_timeout, function()
+    local c, err, fatal = rpc.connect(path)
+    if fatal then
+      fatal_err = err
+      return true
+    end
+    chan = c
+    return chan ~= nil or failed_to_start()
+  end, 50)
+  stderr.active = false
+  if fatal_err then
+    error(fatal_err)
+  end
   if not chan then
-    if vim.fn.executable(config.cmd[1]) ~= 1 then
-      error(
-        'rinze: '
-          .. path
-          .. ' に接続できず、起動コマンド '
-          .. config.cmd[1]
-          .. ' も見つからない (setup の cmd で指定する)'
-      )
-    end
-    local cmd = vim.list_extend(vim.deepcopy(config.cmd), { '--socket', path })
-    local exit_code, stderr = nil, {}
-    local job = vim.fn.jobstart(cmd, {
-      detach = true,
-      stderr_buffered = true,
-      on_stderr = function(_, data)
-        stderr = data
-      end,
-      on_exit = function(_, code)
-        exit_code = code
-      end,
-    })
-    if job <= 0 then
-      error('rinze: 常駐プロセスを起動できない: ' .. table.concat(cmd, ' '))
-    end
-    local function failed_to_start()
-      return exit_code ~= nil and exit_code ~= EXIT_ANOTHER_RINZED_SERVES
-    end
-    vim.wait(config.startup_timeout, function()
-      chan = try_connect(path)
-      return chan ~= nil or failed_to_start()
-    end, 50)
-    if not chan then
-      local reason = failed_to_start() and ('終了した: ' .. vim.trim(table.concat(stderr, '\n')))
-        or (config.startup_timeout .. 'ms 以内に待ち受けを始めなかった')
-      error('rinze: 常駐プロセスが' .. reason)
-    end
+    local reason = failed_to_start() and ('終了した: ' .. vim.trim(table.concat(stderr.lines, '\n')))
+      or (config.startup_timeout .. 'ms 以内に待ち受けを始めなかった')
+    error('rinze: 常駐プロセスが' .. reason)
   end
-  session.chan = chan
+  stderr.lines = {}
   return chan
 end
 
-local function request(session, method, ...)
-  local ok, res = pcall(vim.rpcrequest, connect(session), method, ...)
-  if not ok then
-    session.chan = nil
-    error(res)
+-- rinzed は接続ごとに入力状態を持つので、入力の場所ごとに接続を分ける
+local function connect(session)
+  -- 常駐プロセスが落ちて閉じた接続はつなぎ直す
+  if session.chan and session.chan:is_open() then
+    return session.chan
   end
-  return res
+  local path = socket_path()
+  local chan, err, fatal = rpc.connect(path)
+  if fatal then
+    error(err)
+  end
+  session.chan = chan or spawn_rinzed(path)
+  return session.chan
 end
 
 local function disconnect(session)
   if session.chan then
-    pcall(vim.fn.chanclose, session.chan)
+    pcall(session.chan.close, session.chan)
     session.chan = nil
   end
+end
+
+local function request(session, method, ...)
+  local chan = connect(session)
+  local ok, res = pcall(chan.request, chan, method, { ... }, config.request_timeout)
+  if not ok then
+    disconnect(session)
+    error(res)
+  end
+  return res
 end
 
 local function close_float(session)
@@ -343,14 +374,23 @@ end
 
 function insert.left_context()
   local col = vim.api.nvim_win_get_cursor(0)[2]
-  return vim.api.nvim_get_current_line():sub(1, col)
+  local before = vim.api.nvim_get_current_line():sub(1, col)
+  local chars = vim.fn.strchars(before)
+  if chars > MAX_LEFT_CONTEXT_CHARS then
+    return vim.fn.strcharpart(before, chars - MAX_LEFT_CONTEXT_CHARS)
+  end
+  return before
 end
 
 -- 確定文字列は打鍵として先読みに入れる。API で書き込むと `.` で繰り返せず、undo も打鍵と別の単位になる。
 -- 'i' で先読み中のキーより前に差し込むので、後に入れるものから先に送る
 function insert.insert(_, commit)
   if commit ~= '' then
-    vim.api.nvim_feedkeys(commit, 'ni', true)
+    -- 制御文字は CTRL-V を前に置き、打鍵として働かせず文字として入れる
+    local literal = commit:gsub('%c', function(c)
+      return '\22' .. c
+    end)
+    vim.api.nvim_feedkeys(literal, 'ni', true)
   end
 end
 

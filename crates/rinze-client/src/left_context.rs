@@ -31,6 +31,8 @@ pub(crate) struct PreeditTrail {
 }
 
 const MAX_TRAIL: usize = 64;
+/// rinzed (zenz) が使う左文脈の長さ。それより前の文字は送らない。
+const MAX_LEFT_CONTEXT_CHARS: usize = 40;
 
 impl PreeditTrail {
     pub(crate) fn displayed(&mut self, preedit: &str) {
@@ -85,15 +87,14 @@ pub fn left_context(surrounding: Surrounding, recent_preedits: &[String]) -> Lef
             .rev()
             .find(|&start| chars.get(start..start + preedit.len()) == Some(&preedit[..]))
     });
-    match preedit_start {
-        Some(start) => LeftContext {
-            text: chars[..start].iter().collect(),
-            origin: Origin::PreeditRemoved,
-        },
-        None => LeftContext {
-            text: chars[..cursor].iter().collect(),
-            origin: Origin::Surrounding,
-        },
+    let (end, origin) = match preedit_start {
+        Some(start) => (start, Origin::PreeditRemoved),
+        None => (cursor, Origin::Surrounding),
+    };
+    let begin = end.saturating_sub(MAX_LEFT_CONTEXT_CHARS);
+    LeftContext {
+        text: chars[begin..end].iter().collect(),
+        origin,
     }
 }
 
@@ -211,5 +212,14 @@ mod tests {
     #[test]
     fn 範囲の外のカーソルは末尾として扱う() {
         assert_eq!(left("明日", 9, &[]), ("明日".into(), Origin::Surrounding));
+    }
+
+    #[test]
+    fn 左文脈は末尾の40字に絞る() {
+        let long = "あ".repeat(100) + "精密な";
+        let (text, origin) = left(&long, 103, &[]);
+        assert_eq!(origin, Origin::Surrounding);
+        assert_eq!(text.chars().count(), MAX_LEFT_CONTEXT_CHARS);
+        assert!(text.ends_with("精密な"));
     }
 }

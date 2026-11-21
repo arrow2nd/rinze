@@ -1,13 +1,16 @@
 -- blink.cmp は add_source_provider で渡した module の名前でこのモジュールを require し、ソースとして new を呼ぶ
 local M = {}
 
+local rpc = require('rinze.rpc')
+local socket = require('rinze.socket')
+
 local SOURCE_ID = 'rinze'
 
 local client = {
   path = nil,
   pipe = nil,
   connected = false,
-  received = '',
+  decode = nil,
   next_id = 0,
   inflight = nil,
   queued = nil,
@@ -21,7 +24,7 @@ local function close_client(reason)
     client.pipe:close()
   end
   local waiting = { client.inflight, client.queued }
-  client.pipe, client.connected, client.received = nil, false, ''
+  client.pipe, client.connected, client.decode = nil, false, nil
   client.inflight, client.queued = nil, nil
   for _, request in pairs(waiting) do
     vim.schedule(function()
@@ -63,21 +66,19 @@ local function on_read(read_err, data)
     close_client(read_err or 'rinzed との接続が閉じた')
     return
   end
-  client.received = client.received .. data
-  local pos = 1
-  while pos <= #client.received do
-    local ok, message, next_pos = pcall(vim.mpack.Unpacker(), client.received, pos)
-    if not ok or message == nil then
-      break
-    end
-    pos = next_pos
-    on_message(message)
+  if client.decode then
+    client.decode(data)
   end
-  client.received = client.received:sub(pos)
 end
 
 local function connect()
+  local ok_owner, owner_err = socket.verify_owner(client.path)
+  if not ok_owner then
+    close_client(owner_err)
+    return
+  end
   client.pipe = assert(vim.uv.new_pipe(false))
+  client.decode = rpc.new_decoder(on_message, close_client)
   client.pipe:connect(client.path, function(err)
     if err then
       close_client(err)

@@ -4,6 +4,7 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use rinze_socket::frame::{FrameScanner, MAX_MESSAGE_BYTES, ScanStatus};
 use rmpv::Value;
 
 const MSGPACK_RPC_REQUEST: u64 = 0;
@@ -13,6 +14,7 @@ const MSGPACK_RPC_RESPONSE: u64 = 1;
 pub(crate) struct Connection {
     stream: UnixStream,
     received: Vec<u8>,
+    scanner: FrameScanner,
     next_msgid: u32,
     unanswered: VecDeque<u32>,
 }
@@ -31,22 +33,14 @@ fn io_error(e: io::Error) -> CallError {
     }
 }
 
-fn truncated(e: &rmpv::decode::Error) -> bool {
-    match e {
-        rmpv::decode::Error::InvalidMarkerRead(e) | rmpv::decode::Error::InvalidDataRead(e) => {
-            e.kind() == io::ErrorKind::UnexpectedEof
-        }
-        _ => false,
-    }
-}
-
 impl Connection {
     pub(crate) fn open(socket: &Path, timeout: Duration) -> io::Result<Self> {
-        let stream = UnixStream::connect(socket)?;
+        let stream = rinze_socket::connect_verified(socket)?;
         stream.set_write_timeout(Some(timeout))?;
         Ok(Connection {
             stream,
             received: Vec::new(),
+            scanner: FrameScanner::new(MAX_MESSAGE_BYTES),
             next_msgid: 0,
             unanswered: VecDeque::new(),
         })
@@ -124,7 +118,12 @@ impl Connection {
             let mut chunk = [0; 4096];
             match self.stream.read(&mut chunk) {
                 Ok(0) => return Err(CallError::Broken("rinzed が接続を閉じた".into())),
-                Ok(n) => self.received.extend_from_slice(&chunk[..n]),
+                Ok(n) => {
+                    if self.received.len().saturating_add(n) > MAX_MESSAGE_BYTES {
+                        return Err(CallError::Broken("応答が大きすぎる".into()));
+                    }
+                    self.received.extend_from_slice(&chunk[..n]);
+                }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(e) => return Err(io_error(e)),
             }
@@ -133,14 +132,14 @@ impl Connection {
 
     // 時間切れで途中までしか読めなかった応答は、残りが届くまで `received` に置いておく
     fn take_message(&mut self) -> Result<Option<Value>, CallError> {
-        let mut rest = self.received.as_slice();
-        match rmpv::decode::read_value(&mut rest) {
-            Ok(value) => {
-                let used = self.received.len() - rest.len();
-                self.received.drain(..used);
+        match self.scanner.scan(&self.received) {
+            Ok(ScanStatus::NeedMore) => Ok(None),
+            Ok(ScanStatus::Complete(len)) => {
+                let value = rmpv::decode::read_value(&mut &self.received[..len])
+                    .map_err(|e| CallError::Broken(e.to_string()))?;
+                self.received.drain(..len);
                 Ok(Some(value))
             }
-            Err(e) if truncated(&e) => Ok(None),
             Err(e) => Err(CallError::Broken(e.to_string())),
         }
     }
@@ -172,6 +171,7 @@ mod tests {
         let connection = Connection {
             stream: client,
             received: Vec::new(),
+            scanner: FrameScanner::new(MAX_MESSAGE_BYTES),
             next_msgid: 0,
             unanswered: VecDeque::new(),
         };
@@ -206,6 +206,20 @@ mod tests {
         });
         let answer = connection.call("key", vec![], Duration::from_secs(5));
         assert_eq!(answer.ok(), Some(Value::from("▼感じ")));
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn 上限を超える応答は本体を待たずに拒む() {
+        let (mut connection, mut server) = pair();
+        let handle = std::thread::spawn(move || {
+            let _ = request_id(&mut server);
+            // str32 で 2 GiB を宣言するヘッダだけ送る
+            server.write_all(b"\xdb\x7f\xff\xff\xff").unwrap();
+            server
+        });
+        let result = connection.call("key", vec![], Duration::from_secs(5));
+        assert!(matches!(result, Err(CallError::Broken(_))));
         handle.join().unwrap();
     }
 }

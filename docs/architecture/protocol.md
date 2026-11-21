@@ -2,7 +2,7 @@
 
 msgpack-rpc の要求を 6 種類受け付ける。
 
-- `key(key, left_context)`: `key` は 1 文字か `space` `enter` `backspace` `ctrl-g` `ctrl-j` `ctrl-q`。`left_context` はカーソルより前の文字列で、zenz にはその末尾 40 字を渡す。
+- `key(key, left_context)`: `key` は 1 文字か `space` `enter` `backspace` `ctrl-g` `ctrl-j` `ctrl-q`。`left_context` はカーソルより前の文字列で、zenz には制御文字とプロンプトの区切り (`U+EE00..=U+EEFF`) を除いた末尾 40 字を渡す。
 - `flush()`: 入力途中のものを表示どおりに確定し、状態を空にする。入力モードは変えない。
 - `discard()`: 入力途中のものを確定せずに捨て、状態を空にする。入力モードは変えず、辞書登録の入力欄にいれば外側のモードに戻る。何も確定しないので[学習](../usage/learning.md)の履歴にも書かない。fcitx5 のアドオンが、入力欄からフォーカスが外れたときに使う。
 - `reset()`: `flush` したうえで、入力モードをひらがなに戻す。フロントエンドが入力を有効にしたときに使う。
@@ -31,3 +31,8 @@ msgpack-rpc の要求を 6 種類受け付ける。
 rinzed は 1 つの接続の要求を受け取った順に 1 つずつ処理し、応答も同じ順に返す。fcitx5 のアドオンは、待ち切れなかった応答を捨てずに、次の要求の前に読む ([rinzed の起動と応答の待ち](../frontends/fcitx5.md#rinzed-の起動と応答の待ち))。
 接続を閉じると、rinzed はその接続の入力状態を確定せずに捨てる。入力途中のものは確定せず、学習の履歴にも書かない。入力途中を捨てたいフロントエンドは、入力モードを残すなら `discard` を送り、入力モードも要らなければ `flush` を送らずに接続を閉じる。
 rinzed は最後に zenz でつけた点数を 1 組覚えていて、左文脈と読みと候補が同じ問いには点数をつけ直さない。`lookup` で並べた読みをそのまま Space で変換すると、並べ替えを待たない ([blink.cmp との連携](../frontends/neovim-blink.md))。
+
+## 接続の検証と上限
+
+- rinzed は受け付けた接続ごとに `SO_PEERCRED` (Linux) または `getpeereid` (macOS) で接続相手の uid が自分と同じことを確かめ、同時接続数は 64 本までに限る。`rinze-client` も接続時にソケットの所有者と相手の uid を確かめる。
+- 送受信する msgpack の 1 メッセージは 1 MiB・入れ子 32 段を上限とし、ヘッダで上限を超えるものは本体を読む前に接続を閉じる。

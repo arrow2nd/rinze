@@ -10,6 +10,7 @@ cargo test --release -p rinzed
 
 # headless の Neovim で rinzed を自動起動させ、実際の打鍵でバッファとコマンドラインに入力した結果を確かめる。
 # 一時ディレクトリのソケット、ユーザー辞書、学習の履歴を使い、利用者のファイルには触れない。RINZED で rinzed を差し替えられる
+# 末尾の tests/nvim/security.lua は偽のソケットで制御文字の無害化や片方向 RPC・時間切れ・サイズ上限を確かめ、モデル無しでも単独で走らせられる
 cargo build --release -p rinzed
 tests/nvim/run.sh
 RINZED=result/bin/rinzed tests/nvim/run.sh

@@ -18,28 +18,40 @@
     "socket": "/run/user/1000/rinze.sock"
   },
   {
-    "name": "Linux で XDG_RUNTIME_DIR が無ければ /tmp に利用者名で置く",
+    "name": "Linux で XDG_RUNTIME_DIR が無く XDG_CACHE_HOME があればその下に置く",
+    "os": "linux",
+    "env": { "XDG_CACHE_HOME": "/var/cache/alice", "HOME": "/home/alice", "USER": "alice" },
+    "socket": "/var/cache/alice/rinze/rinze.sock"
+  },
+  {
+    "name": "Linux で XDG_CACHE_HOME の末尾に / があっても同じ場所を指す",
+    "os": "linux",
+    "env": { "XDG_CACHE_HOME": "/var/cache/alice/" },
+    "socket": "/var/cache/alice/rinze/rinze.sock"
+  },
+  {
+    "name": "Linux で XDG_RUNTIME_DIR と XDG_CACHE_HOME が無ければ HOME/.cache/rinze に置く",
     "os": "linux",
     "env": { "USER": "alice", "HOME": "/home/alice" },
-    "socket": "/tmp/rinze-alice.sock"
+    "socket": "/home/alice/.cache/rinze/rinze.sock"
   },
   {
-    "name": "Linux で XDG_RUNTIME_DIR が空なら無い場合と同じ",
+    "name": "Linux で XDG_RUNTIME_DIR と XDG_CACHE_HOME が空なら無い場合と同じ",
     "os": "linux",
-    "env": { "XDG_RUNTIME_DIR": "", "USER": "alice" },
-    "socket": "/tmp/rinze-alice.sock"
+    "env": { "XDG_RUNTIME_DIR": "", "XDG_CACHE_HOME": "", "HOME": "/home/alice", "USER": "alice" },
+    "socket": "/home/alice/.cache/rinze/rinze.sock"
   },
   {
-    "name": "Linux で XDG_RUNTIME_DIR も USER も無ければ利用者名を空にする",
+    "name": "Linux で XDG_RUNTIME_DIR も XDG_CACHE_HOME も HOME も無ければ決められない",
     "os": "linux",
-    "env": {},
-    "socket": "/tmp/rinze-.sock"
+    "env": { "USER": "alice" },
+    "socket": null
   },
   {
-    "name": "Linux で USER が空なら無い場合と同じ",
+    "name": "Linux で HOME が空なら無い場合と同じ",
     "os": "linux",
-    "env": { "USER": "" },
-    "socket": "/tmp/rinze-.sock"
+    "env": { "HOME": "", "USER": "alice" },
+    "socket": null
   },
   {
     "name": "macOS では XDG_RUNTIME_DIR と TMPDIR を見ずに HOME の下に置く",

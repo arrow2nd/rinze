@@ -113,6 +113,22 @@
               HOME=$TMPDIR nvim --headless --clean -l $src/tests/nvim/default_socket.lua
               touch $out
             '';
+        security-nvim =
+          pkgs.runCommand "rinze-security-nvim"
+            {
+              nativeBuildInputs = [ pkgs.neovim ];
+              src = pkgs.lib.fileset.toSource {
+                root = ./.;
+                fileset = pkgs.lib.fileset.unions [
+                  ./nvim
+                  ./tests/nvim/security.lua
+                ];
+              };
+            }
+            ''
+              HOME=$TMPDIR nvim --headless --clean -l $src/tests/nvim/security.lua
+              touch $out
+            '';
         default-cmd =
           let
             rinzedWritingPidToHome = pkgs.writeShellScriptBin "rinzed" ''

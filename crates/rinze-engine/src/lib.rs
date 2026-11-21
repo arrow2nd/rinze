@@ -25,6 +25,8 @@ use romaji::Romaji;
 pub const INLINE_CANDIDATES: usize = 4;
 /// 一覧の 1 ページの選択キー。
 pub const PAGE_LABELS: [char; 7] = ['a', 's', 'd', 'f', 'j', 'k', 'l'];
+/// 辞書登録の入れ子の最大段数。
+pub const MAX_REGISTRATION_DEPTH: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
@@ -170,6 +172,7 @@ pub struct CandidatePage {
 pub struct Session {
     input: Input,
     version: u64,
+    registration_depth: usize,
 }
 
 #[derive(Debug)]
@@ -301,6 +304,7 @@ struct Step<'a> {
     left_context: &'a str,
     commit: String,
     next_mode: Option<Mode>,
+    registration_depth: usize,
     converter: &'a mut dyn Converter,
 }
 
@@ -329,6 +333,13 @@ impl Input {
 }
 
 impl Session {
+    fn with_registration_depth(registration_depth: usize) -> Self {
+        Self {
+            registration_depth,
+            ..Self::default()
+        }
+    }
+
     pub fn handle(
         &mut self,
         key: Key,
@@ -340,6 +351,7 @@ impl Session {
             left_context,
             commit: String::new(),
             next_mode: None,
+            registration_depth: self.registration_depth,
             converter,
         };
         let handled = match &mut self.input {
@@ -393,6 +405,7 @@ impl Session {
             left_context,
             commit: String::new(),
             next_mode: None,
+            registration_depth: self.registration_depth,
             converter,
         };
         let chosen = match &mut self.input {
@@ -407,6 +420,7 @@ impl Session {
             left_context: "",
             commit: String::new(),
             next_mode: None,
+            registration_depth: self.registration_depth,
             converter,
         };
         if let Input::Kana(kana) = &mut self.input {
@@ -856,10 +870,14 @@ impl KanaInput {
                 },
                 trailing_roman,
             },
-            None => Phase::Register {
-                reg: Box::new(Registration::new(Origin::NoCandidates(midashi))),
+            None if step.registration_depth < MAX_REGISTRATION_DEPTH => Phase::Register {
+                reg: Box::new(Registration::new(
+                    Origin::NoCandidates(midashi),
+                    step.registration_depth + 1,
+                )),
                 trailing_roman,
             },
+            None => cancel_no_candidates(midashi, trailing_roman),
         };
     }
 
@@ -872,9 +890,15 @@ impl KanaInput {
     ) -> bool {
         match (key, conv.cursor) {
             (Key::Space, _) => {
-                if !conv.next() && !conv.advance_to_generated(step) {
+                if !conv.next()
+                    && !conv.advance_to_generated(step)
+                    && step.registration_depth < MAX_REGISTRATION_DEPTH
+                {
                     self.phase = Phase::Register {
-                        reg: Box::new(Registration::new(Origin::Candidates(conv))),
+                        reg: Box::new(Registration::new(
+                            Origin::Candidates(conv),
+                            step.registration_depth + 1,
+                        )),
                         trailing_roman,
                     };
                     return true;
@@ -1166,11 +1190,11 @@ impl Midashi {
 }
 
 impl Registration {
-    fn new(origin: Origin) -> Self {
+    fn new(origin: Origin, depth: usize) -> Self {
         Self {
             origin,
             text: String::new(),
-            inner: Session::default(),
+            inner: Session::with_registration_depth(depth),
         }
     }
 
@@ -1199,12 +1223,18 @@ impl Registration {
                 conv,
                 trailing_roman,
             },
-            Origin::NoCandidates(Midashi::Kana { reading, okuri }) => Phase::Midashi {
-                kana: format!("{reading}{}", okuri.map_or(String::new(), |o| o.kana)),
-                roman: trailing_roman,
-            },
-            Origin::NoCandidates(Midashi::Abbrev(text)) => Phase::Abbrev { text },
+            Origin::NoCandidates(midashi) => cancel_no_candidates(midashi, trailing_roman),
         }
+    }
+}
+
+fn cancel_no_candidates(midashi: Midashi, trailing_roman: Romaji) -> Phase {
+    match midashi {
+        Midashi::Kana { reading, okuri } => Phase::Midashi {
+            kana: format!("{reading}{}", okuri.map_or(String::new(), |o| o.kana)),
+            roman: trailing_roman,
+        },
+        Midashi::Abbrev(text) => Phase::Abbrev { text },
     }
 }
 

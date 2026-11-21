@@ -1,10 +1,13 @@
 use std::convert::Infallible;
 use std::ffi::OsString;
-use std::fs::{File, OpenOptions, TryLockError};
+use std::fs::{DirBuilder, File, OpenOptions, Permissions, TryLockError};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use rinze_zenz::{Model, Zenz};
 use rinzed::history::History;
@@ -25,6 +28,8 @@ const SUN_PATH_LEN: usize = 108;
 
 const DEFAULT_THREADS_WHEN_UNKNOWN: usize = 4;
 const DEFAULT_THREADS_CAP: usize = 8;
+const MAX_CONNECTIONS: usize = 64;
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
 
 #[derive(Debug, PartialEq)]
 struct Args {
@@ -156,17 +161,28 @@ fn check_socket_path(socket: &Path) -> Result<(), String> {
 fn lock_socket(socket: &Path) -> Result<Option<File>, String> {
     let mut path = socket.as_os_str().to_owned();
     path.push(".lock");
+    let lock_path = Path::new(&path);
     let file = OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(&path)
-        .map_err(|e| {
-            format!(
-                "ロックファイル {} を開けない: {e}",
-                Path::new(&path).display()
-            )
-        })?;
+        .mode(0o600)
+        .open(lock_path)
+        .map_err(|e| format!("ロックファイル {} を開けない: {e}", lock_path.display()))?;
+    let meta = file.metadata().map_err(|e| {
+        format!(
+            "ロックファイル {} の情報を読めない: {e}",
+            lock_path.display()
+        )
+    })?;
+    let my_uid = rinze_socket::current_uid();
+    if meta.uid() != my_uid {
+        return Err(format!(
+            "ロックファイル {} の所有者 (uid {}) が自分 (uid {my_uid}) と異なる",
+            lock_path.display(),
+            meta.uid()
+        ));
+    }
     match file.try_lock() {
         Ok(()) => Ok(Some(file)),
         Err(TryLockError::WouldBlock) => Ok(None),
@@ -215,8 +231,13 @@ fn main() -> ExitCode {
 
 fn start(args: Args) -> Result<AnotherRinzedServes, Box<dyn std::error::Error>> {
     check_socket_path(&args.socket)?;
-    if let Some(dir) = args.socket.parent() {
-        std::fs::create_dir_all(dir)
+    if let Some(dir) = args.socket.parent().filter(|d| !d.as_os_str().is_empty())
+        && !dir.exists()
+    {
+        DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
             .map_err(|e| format!("ソケットのディレクトリ {} を作れない: {e}", dir.display()))?;
     }
     let Some(_lock) = lock_socket(&args.socket)? else {
@@ -256,26 +277,80 @@ fn start(args: Args) -> Result<AnotherRinzedServes, Box<dyn std::error::Error>> 
     match serve_on(&args.socket, &note, backend)? {}
 }
 
+struct ConnectionGuard(Arc<AtomicUsize>);
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn try_acquire(active: &Arc<AtomicUsize>, limit: usize) -> Option<ConnectionGuard> {
+    active
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            (n < limit).then_some(n + 1)
+        })
+        .ok()
+        .map(|_| ConnectionGuard(Arc::clone(active)))
+}
+
 fn serve_on(
     socket: &Path,
     note: &str,
     backend: &'static Backend,
 ) -> Result<Infallible, Box<dyn std::error::Error>> {
-    match std::fs::remove_file(socket) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-            return Err(format!("残っていたソケット {} を消せない: {e}", socket.display()).into());
+    match std::fs::symlink_metadata(socket) {
+        Ok(meta) => {
+            let my_uid = rinze_socket::current_uid();
+            if meta.uid() != my_uid {
+                return Err(format!(
+                    "残っていたソケット {} の所有者 (uid {}) が自分 (uid {my_uid}) と異なる",
+                    socket.display(),
+                    meta.uid()
+                )
+                .into());
+            }
+            std::fs::remove_file(socket)
+                .map_err(|e| format!("残っていたソケット {} を消せない: {e}", socket.display()))?;
         }
-        _ => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(format!(
+                "残っていたソケット {} を確かめられない: {e}",
+                socket.display()
+            )
+            .into());
+        }
     }
     let listener = UnixListener::bind(socket)?;
+    std::fs::set_permissions(socket, Permissions::from_mode(0o600))?;
+    let active = Arc::new(AtomicUsize::new(0));
     log!("rinzed: {} で待ち受け中 ({note})", socket.display());
     loop {
-        let (stream, _) = listener.accept()?;
-        std::thread::spawn(move || {
+        let (stream, _) = match listener.accept() {
+            Ok(accepted) => accepted,
+            Err(e) => {
+                log!("rinzed: 接続を受け付けられない: {e}");
+                std::thread::sleep(ACCEPT_BACKOFF);
+                continue;
+            }
+        };
+        if let Err(e) = rinze_socket::verify_peer_uid(&stream) {
+            log!("rinzed: 接続を拒んだ: {e}");
+            continue;
+        }
+        let Some(guard) = try_acquire(&active, MAX_CONNECTIONS) else {
+            log!("rinzed: 同時接続数の上限 ({MAX_CONNECTIONS}) に達したので接続を閉じた");
+            continue;
+        };
+        if let Err(e) = std::thread::Builder::new().spawn(move || {
+            let _guard = guard;
             if let Err(e) = rinzed::serve(stream, backend) {
                 log!("rinzed: 接続を閉じた: {e}");
             }
-        });
+        }) {
+            log!("rinzed: 接続のスレッドを作れない: {e}");
+        }
     }
 }
 
@@ -332,5 +407,18 @@ mod tests {
     fn モデルか辞書が引数にも環境変数にも無ければ起動しない() {
         assert!(parse(&["--dict", "/L"], &[]).is_err());
         assert!(parse(&["--model", "/m.gguf"], &[("RINZED_DEFAULT_DICTS", "")]).is_err());
+    }
+
+    #[test]
+    fn 同時接続数の上限を超えず解放すると再び受け付ける() {
+        let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let g1 = super::try_acquire(&active, 2).unwrap();
+        let g2 = super::try_acquire(&active, 2).unwrap();
+        assert!(super::try_acquire(&active, 2).is_none());
+        drop(g1);
+        let g3 = super::try_acquire(&active, 2).unwrap();
+        assert!(super::try_acquire(&active, 2).is_none());
+        drop((g2, g3));
+        assert_eq!(active.load(std::sync::atomic::Ordering::Acquire), 0);
     }
 }

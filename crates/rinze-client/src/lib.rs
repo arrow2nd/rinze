@@ -96,6 +96,9 @@ impl Service {
                 self.launcher.connected();
                 Ok(c)
             }
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                Err(Error::Unavailable(e.to_string()))
+            }
             Err(_) => Err(match self.launcher.not_connected() {
                 Blocked::Starting => Error::Starting,
                 Blocked::Unavailable(reason) => Error::Unavailable(reason),
