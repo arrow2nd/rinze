@@ -280,10 +280,8 @@ void typing(Instance *instance) {
     t.ic()->setCapabilityFlags(
         CapabilityFlags{CapabilityFlag::Preedit, CapabilityFlag::SurroundingText,
                         CapabilityFlag::Sensitive});
-    t.setSurrounding("秘密の文脈", 5);
-    t.type("A");
-    FCITX_ASSERT(contains(t.auxDown(), "左文脈 (sensitive)")) << t.auxDown();
-    t.cancelAll();
+    FCITX_ASSERT(!t.press("a")) << "Sensitive の入力欄では打鍵を rinze が奪わずアプリへ通す";
+    FCITX_ASSERT(t.preedit().empty()) << t.preedit();
     t.ic()->setCapabilityFlags(
         CapabilityFlags{CapabilityFlag::Preedit, CapabilityFlag::SurroundingText,
                         CapabilityFlag::Password});

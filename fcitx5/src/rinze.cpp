@@ -340,7 +340,9 @@ public:
         if (event.isRelease() || key.isModifier()) {
             return;
         }
-        if (event.inputContext()->capabilityFlags().test(CapabilityFlag::Password)) {
+        // 打鍵を rinzed に送ると読みと語が学習の履歴に残るので、残してはいけない入力欄では送らない
+        const auto caps = event.inputContext()->capabilityFlags();
+        if (caps.test(CapabilityFlag::Password) || caps.test(CapabilityFlag::Sensitive)) {
             return;
         }
         auto *s = state(event.inputContext());
