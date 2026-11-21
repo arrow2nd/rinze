@@ -194,7 +194,7 @@ while IFS=: read -r src_file lineno content; do
       err "${src_file}:${lineno}: code references missing doc path '${doc_ref}'"
     fi
   done < <(printf '%s\n' "$content" | grep -oE 'docs/[A-Za-z0-9._/-]+\.md' || true)
-done < <(git grep -n 'docs/' -- ':!README.md' ':!docs/' ':!.agents/' || true)
+done < <(git grep -n 'docs/' -- ':!README.md' ':!docs/' ':!.agents/' ':!.claude/' || true)
 
 printf 'Checked %d markdown files: %d error(s), %d warning(s)\n' "${#md_files[@]}" "$errors" "$warnings"
 
