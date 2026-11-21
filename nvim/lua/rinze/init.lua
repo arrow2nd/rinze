@@ -605,6 +605,7 @@ local function disable(session)
     return
   end
   flush_in_place(session)
+  disconnect(session)
   session.enabled = false
   sync(session)
   session.surface.detach(session)
