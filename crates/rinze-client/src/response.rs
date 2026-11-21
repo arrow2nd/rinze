@@ -36,7 +36,7 @@ pub struct Minibuffer {
     pub preedit: String,
 }
 
-/// rinzed の応答。各項目の意味は README の「通信」の節にある。
+/// rinzed の応答。各項目の意味は docs/architecture/protocol.md にある。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Response {
     pub handled: bool,

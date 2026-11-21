@@ -273,7 +273,7 @@ mod tests {
     fn どのモードからどのモードへも切り替えのキーで着く() {
         use Mode::*;
         let all = [Hiragana, Katakana, HalfwidthKatakana, Ascii, FullwidthLatin];
-        // README の「入力モード」の表と同じ切り替え
+        // docs/usage/modes.md の「入力モード」の表と同じ切り替え
         let after = |mode: Mode, key: &str| match (mode, key) {
             (Ascii | FullwidthLatin, "ctrl-j") => Hiragana,
             (Hiragana, "q") => Katakana,
