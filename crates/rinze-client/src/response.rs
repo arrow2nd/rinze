@@ -46,7 +46,6 @@ pub struct Response {
     pub minibuffer: Option<Minibuffer>,
     pub mode: Mode,
     pub passthrough: bool,
-    pub reading: Option<String>,
     pub version: u64,
 }
 
@@ -111,9 +110,6 @@ impl Response {
             minibuffer,
             mode,
             passthrough: flag(map, "passthrough"),
-            reading: field(map, "reading")
-                .and_then(Value::as_str)
-                .map(str::to_string),
             version: number(map, "version")?,
         })
     }

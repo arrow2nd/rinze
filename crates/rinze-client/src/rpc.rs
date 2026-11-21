@@ -52,10 +52,6 @@ impl Connection {
         })
     }
 
-    pub(crate) fn stream(&self) -> &UnixStream {
-        &self.stream
-    }
-
     pub(crate) fn has_unanswered(&self) -> bool {
         !self.unanswered.is_empty()
     }

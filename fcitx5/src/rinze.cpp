@@ -14,6 +14,7 @@
 #include <fcitx/addonfactory.h>
 #include <fcitx/addonmanager.h>
 #include <fcitx/candidatelist.h>
+#include <fcitx/event.h>
 #include <fcitx/globalconfig.h>
 #include <fcitx/inputcontext.h>
 #include <fcitx/inputcontextmanager.h>
@@ -155,6 +156,7 @@ public:
     void switchMode(RinzeMode mode);
     void connect();
     void startupFinished(RinzeStatus status, const char *message);
+    void restoreNotice();
 
     std::optional<RinzeMode> mode() const;
     bool passthrough() const;
@@ -271,6 +273,18 @@ public:
             modeMenu_.addAction(choices_.back().get());
         }
         instance_->inputContextManager().registerProperty("rinzeState", &factory_);
+        // fcitx5 5.1.19 は入力メソッドの名前をパネルの上段に出して知らせを上書きし、1 秒後にパネルを空にする。
+        // rinzed が起動に失敗した知らせなどが次の打鍵まで見えなくならないよう、パネルが空になったら出し直す
+        panelWatcher_ = instance_->watchEvent(
+            fcitx::EventType::InputContextUpdateUI, fcitx::EventWatcherPhase::Default,
+            [this](fcitx::Event &event) {
+                auto &ui = static_cast<fcitx::InputContextUpdateUIEvent &>(event);
+                auto *ic = ui.inputContext();
+                if (ui.component() == UserInterfaceComponent::InputPanel &&
+                    instance_->inputMethodEngine(ic) == this) {
+                    state(ic)->restoreNotice();
+                }
+            });
     }
 
     RinzeState *state(InputContext *ic) { return ic->propertyFor(&factory_); }
@@ -390,9 +404,8 @@ private:
     ServicePtr newService() const {
         auto socket = envOr("RINZE_SOCKET", "");
         auto program = envOr("RINZE_RINZED", "rinzed");
-        bool prefetch = std::getenv("RINZE_FCITX_NO_PREFETCH") == nullptr;
-        ServicePtr service(rinze_service_new(socket.empty() ? nullptr : socket.c_str(),
-                                             program.c_str(), prefetch));
+        ServicePtr service(
+            rinze_service_new(socket.empty() ? nullptr : socket.c_str(), program.c_str()));
         if (!service) {
             throw std::runtime_error(
                 "rinze: 既定のソケットのパスを決められない (RINZE_SOCKET で指定する)");
@@ -409,6 +422,7 @@ private:
     std::vector<std::unique_ptr<RinzeModeChoice>> choices_;
     std::unique_ptr<fcitx::EventSourceTime> startupTimer_;
     fcitx::TrackableObjectReference<InputContext> waiting_;
+    std::unique_ptr<fcitx::HandlerTableEntry<fcitx::EventHandler>> panelWatcher_;
 };
 
 std::string RinzeModeAction::shortText(InputContext *ic) const {
@@ -504,6 +518,12 @@ void RinzeState::startupFinished(RinzeStatus status, const char *message) {
     }
     notice_ = message;
     render();
+}
+
+void RinzeState::restoreNotice() {
+    if (!notice_.empty() && ic_.hasFocus() && ic_.inputPanel().auxUp().empty()) {
+        render();
+    }
 }
 
 bool RinzeState::apply(RinzeResponse *raw) {

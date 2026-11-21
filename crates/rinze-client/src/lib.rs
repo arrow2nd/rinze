@@ -1,11 +1,10 @@
 //! rinzed と msgpack-rpc で話すクライアント。fcitx5 などのフロントエンドから C ABI ([`ffi`]) で使う。
 //!
-//! [`Service`] は 1 つの rinzed (ソケット) に当たり、起動と先読みを受け持つ。フロントエンドに 1 つ作る。
+//! [`Service`] は 1 つの rinzed (ソケット) に当たり、起動を受け持つ。フロントエンドに 1 つ作る。
 //! [`Client`] は rinzed の 1 つの入力状態 (1 接続) に当たり、入力欄ごとに 1 つ作る。
 
 mod launch;
 mod left_context;
-mod prefetch;
 mod response;
 mod rpc;
 
@@ -25,7 +24,6 @@ use left_context::PreeditTrail;
 pub use response::{CandidatePage, Minibuffer, Mode, Response};
 
 use launch::{Blocked, Launcher};
-use prefetch::Prefetcher;
 use rpc::{CallError, Connection};
 
 // 待つ間は fcitx5 全体が固まる。CPU が詰まっていても変換を待てて、止まった rinzed からはいずれ抜けられる長さにする
@@ -68,7 +66,6 @@ pub enum Status {
 pub struct Service {
     socket: PathBuf,
     launcher: Launcher,
-    prefetcher: Option<Prefetcher>,
     // どれかの接続で応答を待ち切れず、そのあとまだどの応答も受け取っていない
     stalled: AtomicBool,
 }
@@ -78,7 +75,6 @@ pub struct Options {
     pub socket: Option<PathBuf>,
     /// 接続できなかったときに `--socket` を付けて起動する rinzed。`None` なら起動しない。
     pub program: Option<PathBuf>,
-    pub prefetch: bool,
 }
 
 impl Service {
@@ -89,7 +85,6 @@ impl Service {
         };
         Ok(Arc::new(Service {
             launcher: Launcher::new(options.program, socket.clone()),
-            prefetcher: options.prefetch.then(|| Prefetcher::new(socket.clone())),
             socket,
             stalled: AtomicBool::new(false),
         }))
@@ -122,7 +117,6 @@ pub struct Client {
     service: Arc<Service>,
     connection: Option<Connection>,
     trail: PreeditTrail,
-    prefetched: Option<String>,
     last_left_context: Option<LeftContext>,
     // 待ち切れなかった応答で rinzed が確定したもの。次に返す応答の `commit` の前に付ける
     late_commit: String,
@@ -134,7 +128,6 @@ impl Client {
             service,
             connection: None,
             trail: PreeditTrail::default(),
-            prefetched: None,
             last_left_context: None,
             late_commit: String::new(),
         }
@@ -145,9 +138,7 @@ impl Client {
         let left = surrounding.map(|s| self.trail.left_context(s));
         let left_text = left.as_ref().map_or(String::new(), |l| l.text.clone());
         self.last_left_context = left;
-        let response = self.call("key", vec![key.into(), left_text.as_str().into()])?;
-        self.prefetch(&response, &left_text);
-        Ok(response)
+        self.call("key", vec![key.into(), left_text.into()])
     }
 
     /// 入力途中のものを確定せずに捨てる。入力モードは変えない。
@@ -259,16 +250,6 @@ impl Client {
             .commit
             .insert_str(0, &std::mem::take(&mut self.late_commit));
         Ok(response)
-    }
-
-    fn prefetch(&mut self, response: &Response, left_context: &str) {
-        if response.reading == self.prefetched {
-            return;
-        }
-        self.prefetched = response.reading.clone();
-        if let (Some(reading), Some(prefetcher)) = (&response.reading, &self.service.prefetcher) {
-            prefetcher.request(reading, left_context);
-        }
     }
 }
 

@@ -43,11 +43,6 @@ mkdir -p "$dir/a-state" "$dir/a-data"
 XDG_STATE_HOME=$dir/a-state XDG_DATA_HOME=$dir/a-data RINZE_SOCKET=$dir/a.sock RINZE_RINZED=$rinzed \
   "$testrinze" autostart
 
-echo "--- 先読みあり"
-RINZE_SOCKET=$dir/t.sock RINZE_RINZED=$dir/not-launched "$testrinze" prefetch
-echo "--- 先読みなし"
-RINZE_SOCKET=$dir/t.sock RINZE_RINZED=$dir/not-launched RINZE_FCITX_NO_PREFETCH=1 "$testrinze" prefetch
-
 echo "--- rinzed が PATH に無い"
 mkdir "$dir/empty-bin"
 PATH=$dir/empty-bin RINZE_SOCKET=$dir/m.sock "$testrinze" missing

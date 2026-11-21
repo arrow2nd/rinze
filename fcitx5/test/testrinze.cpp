@@ -24,7 +24,6 @@
 #include <fcitx-utils/log.h>
 #include <fcitx-utils/macros.h>
 #include <fcitx-utils/testing.h>
-#include <fcitx-utils/utf8.h>
 #include <fcitx/action.h>
 #include <fcitx/addonmanager.h>
 #include <fcitx/candidatelist.h>
@@ -563,38 +562,6 @@ void typing(Instance *instance) {
     instance->exit();
 }
 
-// 打鍵の待ちを隠す先読みの効果を測る。RINZE_FCITX_NO_PREFETCH を立てて走らせると先読みなしで測る
-void prefetch(Instance *instance) {
-    useRinze(instance);
-    Typist t(instance);
-    t.enableRinze();
-    Timings typed{"読みが変わる打鍵 (こう)"};
-    Timings settled{"読みを打って 500 ms 後の Space (こう)"};
-    Timings immediate{"読みを打った直後の Space (こう)"};
-    for (int round = 0; round < 5; round++) {
-        for (bool wait : {true, false}) {
-            auto left = "文脈" + std::to_string(round) + (wait ? "待つ" : "待たない");
-            t.setSurrounding(left, utf8::length(left));
-            for (char c : std::string_view("Kou")) {
-                t.press(Key(static_cast<KeySym>(c)));
-                typed.millis.push_back(t.lastMillis);
-            }
-            if (wait) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            }
-            t.press("space");
-            (wait ? settled : immediate).millis.push_back(t.lastMillis);
-            FCITX_ASSERT(t.preedit().rfind("▼", 0) == 0) << t.preedit();
-            t.cancelAll();
-        }
-    }
-    typed.report();
-    settled.report();
-    immediate.report();
-    t.destroy();
-    instance->exit();
-}
-
 void autostart(Instance *instance, Waiter &waiter) {
     useRinze(instance);
     auto *t = new Typist(instance);
@@ -636,15 +603,30 @@ void missing(Instance *instance) {
 void failing(Instance *instance, Waiter &waiter) {
     useRinze(instance);
     auto *t = new Typist(instance);
+    auto started = Clock::now();
     t->enableRinze();
     FCITX_ASSERT(!t->press("a")) << "打鍵はアプリへ通す";
     auto exited = std::string("rinze: ") + env("RINZE_RINZED") + " が終了した (exit status: 1): ";
+    // 知らせが出たあとに fcitx5 が入力メソッドの名前を出しても (5.1.19 はパネルの上段を上書きし、1 秒後に空にする)、知らせは戻る
+    auto informed = std::make_shared<bool>(false);
     waiter.until(
-        instance, 30'000, [=] { return contains(t->auxUp(), "が終了した"); },
+        instance, 30'000,
+        [=] {
+            if (!contains(t->auxUp(), "が終了した")) {
+                return false;
+            }
+            if (!*informed) {
+                FCITX_INFO() << "rinzed の起動の失敗をパネルに出すまで: " << millisSince(started) << " ms";
+                instance->showInputMethodInformation(t->ic());
+                *informed = true;
+                return false;
+            }
+            return true;
+        },
         [=](bool shown, double waited) {
             FCITX_ASSERT(shown && t->auxUp().rfind(exited, 0) == 0) << t->auxUp();
             FCITX_ASSERT(contains(t->auxUp(), "(exit status: 1): rinzed: モデル /missing.gguf を読めない")) << t->auxUp();
-            FCITX_INFO() << "rinzed の起動の失敗をパネルに出すまで: " << waited << " ms: " << t->auxUp();
+            FCITX_INFO() << "入力メソッドの名前を出したあと、知らせが戻るまで含めて: " << waited << " ms: " << t->auxUp();
             t->destroy();
             delete t;
             instance->exit();
@@ -681,7 +663,7 @@ void unresponsive(Instance *instance) {
 } // namespace
 
 int main(int argc, char *argv[]) {
-    FCITX_ASSERT(argc == 2) << "使い方: testrinze typing|prefetch|autostart|missing|failing|unresponsive";
+    FCITX_ASSERT(argc == 2) << "使い方: testrinze typing|autostart|missing|failing|unresponsive";
     std::string scenario = argv[1];
     setupTestingEnvironment(TESTING_BINARY_DIR, {"addon-lib"}, {"data"});
     char arg0[] = "testrinze";
@@ -695,8 +677,6 @@ int main(int argc, char *argv[]) {
     instance.eventDispatcher().schedule([&] {
         if (scenario == "typing") {
             typing(&instance);
-        } else if (scenario == "prefetch") {
-            prefetch(&instance);
         } else if (scenario == "autostart") {
             autostart(&instance, waiter);
         } else if (scenario == "missing") {

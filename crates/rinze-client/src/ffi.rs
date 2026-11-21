@@ -138,19 +138,16 @@ impl From<Response> for RinzeResponse {
 }
 
 /// `socket` が NULL なら既定のソケット。`program` は接続できなかったときに `--socket` を付けて起動する rinzed で、NULL なら起動しない。
-/// `prefetch` が true なら、見出しの読みが変わって少しの間そのままなら別の接続で候補を問い合わせ、Space での変換の待ちを隠す。
 /// 既定のソケットを決められなければ NULL を返す。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rinze_service_new(
     socket: *const c_char,
     program: *const c_char,
-    prefetch: bool,
 ) -> *mut RinzeService {
     guarded(ptr::null_mut(), || {
         let options = Options {
             socket: unsafe { text(socket) }.map(|s| PathBuf::from(s.as_ref())),
             program: unsafe { text(program) }.map(|s| PathBuf::from(s.as_ref())),
-            prefetch,
         };
         match Service::new(options) {
             Ok(service) => Box::into_raw(Box::new(RinzeService {

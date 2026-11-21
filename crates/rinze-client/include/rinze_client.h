@@ -54,11 +54,9 @@ extern "C" {
 #endif // __cplusplus
 
 // `socket` が NULL なら既定のソケット。`program` は接続できなかったときに `--socket` を付けて起動する rinzed で、NULL なら起動しない。
-// `prefetch` が true なら、見出しの読みが変わって少しの間そのままなら別の接続で候補を問い合わせ、Space での変換の待ちを隠す。
 // 既定のソケットを決められなければ NULL を返す。
 RinzeService *rinze_service_new(const char *socket,
-                                const char *program,
-                                bool prefetch);
+                                const char *program);
 
 void rinze_service_free(RinzeService *service);
 
