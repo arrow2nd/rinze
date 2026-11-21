@@ -56,14 +56,16 @@ fn median(mut v: Vec<f64>) -> f64 {
 
 fn main() {
     let runs: usize = std::env::args().nth(1).map_or(11, |s| s.parse().unwrap());
-    let model = Model::load(std::env::var("RINZE_MODEL").unwrap().as_ref()).unwrap();
+    let model: &'static Model = Box::leak(Box::new(
+        Model::load(std::env::var("RINZE_MODEL").unwrap().as_ref()).unwrap(),
+    ));
     let backend = Backend::new(
         rinzed::load_dictionaries(std::env::split_paths(
             &std::env::var_os("RINZE_DICT").unwrap(),
         ))
         .unwrap(),
         UserDictionary::in_memory(),
-        Zenz::new(&model, 8).unwrap(),
+        Zenz::new(model, 8).unwrap(),
         Learning::Off,
     );
     println!(

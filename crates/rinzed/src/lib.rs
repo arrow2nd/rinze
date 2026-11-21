@@ -24,8 +24,10 @@ pub mod user_dict;
 
 use std::io::{BufReader, BufWriter, Write};
 use std::os::unix::net::UnixStream;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::Mutex;
+use std::sync::mpsc::{self, Sender};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use history::History;
@@ -55,17 +57,19 @@ const KANJI_LIKE_KATAKANA: [char; 2] = ['ヵ', 'ヶ'];
 const MSGPACK_RPC_REQUEST: u64 = 0;
 const MSGPACK_RPC_RESPONSE: u64 = 1;
 
-pub struct Backend<'m> {
+pub struct Backend {
     pub dict: Dictionary,
     pub user: Mutex<UserDictionary>,
     pub learning: Learning,
-    scorer: Mutex<Scorer<'m>>,
+    scorer: Sender<Job>,
 }
 
-struct Scorer<'m> {
-    zenz: Zenz<'m>,
+struct Scorer {
+    zenz: Zenz<'static>,
     last: Option<Scored>,
 }
+
+type Job = Box<dyn FnOnce(&mut Scorer) + Send>;
 
 struct Scored {
     left_context: String,
@@ -146,18 +150,43 @@ fn hiragana(c: char) -> Option<char> {
     }
 }
 
-impl<'m> Backend<'m> {
-    pub fn new(dict: Dictionary, user: UserDictionary, zenz: Zenz<'m>, learning: Learning) -> Self {
+impl Backend {
+    // zenz は 1 本のスレッドだけで動かす。llama.cpp の OpenMP は、計算を頼んだスレッドごとに待機するスレッドを作って持ち続けるので、
+    // 接続ごとのスレッドで計算すると、点数づけを頼んだ接続の数だけスレッドとメモリが増える
+    pub fn new(
+        dict: Dictionary,
+        user: UserDictionary,
+        zenz: Zenz<'static>,
+        learning: Learning,
+    ) -> Self {
+        let (scorer, jobs) = mpsc::channel::<Job>();
+        std::thread::spawn(move || {
+            let mut state = Scorer { zenz, last: None };
+            for job in jobs {
+                let _ = catch_unwind(AssertUnwindSafe(|| job(&mut state)));
+            }
+        });
         Self {
             dict,
             user: Mutex::new(user),
             learning,
-            scorer: Mutex::new(Scorer { zenz, last: None }),
+            scorer,
         }
     }
 
-    fn scorer(&self) -> std::sync::MutexGuard<'_, Scorer<'m>> {
-        self.scorer.lock().unwrap_or_else(|e| e.into_inner())
+    fn with_scorer<R: Send + 'static>(
+        &self,
+        job: impl FnOnce(&mut Scorer) -> rinze_zenz::Result<R> + Send + 'static,
+    ) -> rinze_zenz::Result<R> {
+        let (reply, result) = mpsc::sync_channel(1);
+        self.scorer
+            .send(Box::new(move |scorer| {
+                let _ = reply.send(job(scorer));
+            }))
+            .map_err(|_| "zenz のスレッドが無い")?;
+        result
+            .recv()
+            .map_err(|_| "zenz のスレッドが途中で止まった")?
     }
 
     pub fn user(&self) -> std::sync::MutexGuard<'_, UserDictionary> {
@@ -216,20 +245,22 @@ impl<'m> Backend<'m> {
         let okuri = okuri.as_ref().map_or("", |o| o.kana.as_str());
         let surfaces: Vec<String> = words.iter().map(|w| format!("{w}{okuri}")).collect();
         let reading = format!("{reading}{okuri}");
-        let mut scorer = self.scorer();
-        if let Some(scored) = scorer.last.as_ref().filter(|s| {
-            s.left_context == left_context && s.reading == reading && s.surfaces == surfaces
-        }) {
-            return Ok(scored.scores.clone());
-        }
-        let scores = scorer.zenz.score(left_context, &reading, &surfaces)?;
-        scorer.last = Some(Scored {
-            left_context: left_context.to_string(),
-            reading,
-            surfaces,
-            scores: scores.clone(),
-        });
-        Ok(scores)
+        let left_context = left_context.to_string();
+        self.with_scorer(move |scorer| {
+            if let Some(scored) = scorer.last.as_ref().filter(|s| {
+                s.left_context == left_context && s.reading == reading && s.surfaces == surfaces
+            }) {
+                return Ok(scored.scores.clone());
+            }
+            let scores = scorer.zenz.score(&left_context, &reading, &surfaces)?;
+            scorer.last = Some(Scored {
+                left_context,
+                reading,
+                surfaces,
+                scores: scores.clone(),
+            });
+            Ok(scores)
+        })
     }
 
     /// zenz が生成した表記のうち、読みと送りがなに対応するものを良い順に返す。読みと同じひらがなの表記は除く。
@@ -245,18 +276,16 @@ impl<'m> Backend<'m> {
         let okuri = okuri.as_ref().map_or("", |o| o.kana.as_str());
         let reading = format!("{stem_reading}{okuri}");
         let started = Instant::now();
-        let generated =
-            match self
-                .scorer()
-                .zenz
-                .generate(query.left_context, &reading, GENERATE_WIDTH)
-            {
-                Ok(g) => g,
-                Err(e) => {
-                    log!("rinzed: {reading} の生成に失敗した: {e}");
-                    return Vec::new();
-                }
-            };
+        let (left_context, asked) = (query.left_context.to_string(), reading.clone());
+        let generated = match self
+            .with_scorer(move |scorer| scorer.zenz.generate(&left_context, &asked, GENERATE_WIDTH))
+        {
+            Ok(g) => g,
+            Err(e) => {
+                log!("rinzed: {reading} の生成に失敗した: {e}");
+                return Vec::new();
+            }
+        };
         let Some(best) = generated.first().map(|g| g.score) else {
             return Vec::new();
         };
@@ -342,9 +371,9 @@ fn now_millis() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
-struct SharedConverter<'a, 'm>(&'a Backend<'m>);
+struct SharedConverter<'a>(&'a Backend);
 
-impl Converter for SharedConverter<'_, '_> {
+impl Converter for SharedConverter<'_> {
     fn candidates(&mut self, query: &Query) -> Vec<String> {
         self.0.candidates(query)
     }
@@ -367,7 +396,7 @@ impl Converter for SharedConverter<'_, '_> {
 }
 
 /// 1 接続ぶんの要求を、接続が切れるまで順に処理する。
-pub fn serve(stream: UnixStream, backend: &Backend<'_>) -> std::io::Result<()> {
+pub fn serve(stream: UnixStream, backend: &Backend) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = BufWriter::new(stream);
     let mut session = Session::default();
@@ -405,7 +434,7 @@ pub fn serve(stream: UnixStream, backend: &Backend<'_>) -> std::io::Result<()> {
 
 fn dispatch(
     session: &mut Session,
-    backend: &Backend<'_>,
+    backend: &Backend,
     method: &str,
     params: &Value,
 ) -> Result<Value, String> {

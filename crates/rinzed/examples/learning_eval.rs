@@ -273,13 +273,13 @@ fn corpus_passes(sections: &[Scene], config: Config) -> [Rate; 2] {
     })
 }
 
-struct Oracle<'a, 'm> {
-    backend: &'a Backend<'m>,
+struct Oracle<'a> {
+    backend: &'a Backend,
     expect: Option<String>,
     scenes: Vec<Scene>,
 }
 
-impl Oracle<'_, '_> {
+impl Oracle<'_> {
     fn scene(&self, query: &Query, expect: &str) -> Scene {
         let words = lookup(&self.backend.dict, &self.backend.user(), query.midashi);
         let scores = match query.midashi {
@@ -307,7 +307,7 @@ impl Oracle<'_, '_> {
     }
 }
 
-impl Converter for Oracle<'_, '_> {
+impl Converter for Oracle<'_> {
     fn candidates(&mut self, query: &Query) -> Vec<String> {
         let okuri = query.midashi.okuri().map_or("", |o| o.kana.as_str());
         let expect = self.expect.take().expect("区間の外で変換が始まった");
@@ -351,7 +351,7 @@ fn keys(text: &str) -> Vec<Key> {
     keys
 }
 
-fn corpus_scenes(backend: &Backend<'_>) -> Vec<Scene> {
+fn corpus_scenes(backend: &Backend) -> Vec<Scene> {
     let mut oracle = Oracle {
         backend,
         expect: None,
@@ -393,7 +393,7 @@ fn corpus_scenes(backend: &Backend<'_>) -> Vec<Scene> {
     oracle.scenes
 }
 
-fn case_scene(backend: &Backend<'_>, case: &Case) -> Scene {
+fn case_scene(backend: &Backend, case: &Case) -> Scene {
     let midashi = Midashi::Kana {
         reading: case.yomi.clone(),
         okuri: case.okuri_key.chars().next().map(|consonant| Okuri {
@@ -551,17 +551,23 @@ fn print_detail(config: Config, pairs: &[(&Scene, &Scene)], learn: &[&Scene], co
     }
 }
 
-fn main() {
-    let model = Model::load(std::env::var("RINZE_MODEL").unwrap().as_ref()).unwrap();
-    let backend = Backend::new(
+fn backend() -> Backend {
+    let model: &'static Model = Box::leak(Box::new(
+        Model::load(std::env::var("RINZE_MODEL").unwrap().as_ref()).unwrap(),
+    ));
+    Backend::new(
         rinzed::load_dictionaries(std::env::split_paths(
             &std::env::var_os("RINZE_DICT").unwrap(),
         ))
         .unwrap(),
         UserDictionary::in_memory(),
-        Zenz::new(&model, 8).unwrap(),
+        Zenz::new(model, 8).unwrap(),
         Learning::Off,
-    );
+    )
+}
+
+fn main() {
+    let backend = backend();
     let cases: Vec<Case> = serde_json::from_str(include_str!("learning_cases.json")).unwrap();
     let scenes: Vec<Scene> = cases.iter().map(|c| case_scene(&backend, c)).collect();
     let corpus = corpus_scenes(&backend);

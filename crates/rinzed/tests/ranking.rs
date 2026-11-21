@@ -22,11 +22,11 @@ fn 試作と同じ順位に並べる() {
         eprintln!("RINZE_MODEL と RINZE_DICT が無いので飛ばす");
         return;
     };
-    let model = Model::load(model.as_ref()).unwrap();
+    let model: &'static Model = Box::leak(Box::new(Model::load(model.as_ref()).unwrap()));
     let backend = Backend::new(
         Dictionary::from_bytes(&std::fs::read(dict).unwrap()),
         UserDictionary::in_memory(),
-        Zenz::new(&model, 8).unwrap(),
+        Zenz::new(model, 8).unwrap(),
         Learning::Off,
     );
     let cases: Vec<Case> =

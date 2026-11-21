@@ -244,8 +244,7 @@ fn start(args: Args) -> Result<AnotherRinzedServes, Box<dyn std::error::Error>> 
     let model_error = |e| format!("モデル {} を読めない: {e}", args.model.display());
     let model: &'static Model = Box::leak(Box::new(Model::load(&args.model).map_err(model_error)?));
     let zenz = Zenz::new(model, args.threads).map_err(model_error)?;
-    let backend: &'static Backend<'static> =
-        Box::leak(Box::new(Backend::new(dict, user, zenz, learning)));
+    let backend: &'static Backend = Box::leak(Box::new(Backend::new(dict, user, zenz, learning)));
 
     let dicts: Vec<String> = args.dicts.iter().map(|d| d.display().to_string()).collect();
     let note = format!(
@@ -260,7 +259,7 @@ fn start(args: Args) -> Result<AnotherRinzedServes, Box<dyn std::error::Error>> 
 fn serve_on(
     socket: &Path,
     note: &str,
-    backend: &'static Backend<'static>,
+    backend: &'static Backend,
 ) -> Result<Infallible, Box<dyn std::error::Error>> {
     match std::fs::remove_file(socket) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
