@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>ja</string>
+	<key>CFBundleExecutable</key>
+	<string>rinze</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.arrow2nd.inputmethod.rinze</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>rinze</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>InputMethodConnectionName</key>
+	<string>io.github.arrow2nd.inputmethod.rinze_Connection</string>
+	<key>InputMethodServerControllerClass</key>
+	<string>RinzeInputController</string>
+	<key>TISInputSourceID</key>
+	<string>io.github.arrow2nd.inputmethod.rinze</string>
+	<key>TISIntendedLanguage</key>
+	<string>ja</string>
+	<key>tsInputMethodCharacterRepertoireKey</key>
+	<array>
+		<string>Hira</string>
+		<string>Kana</string>
+		<string>Latn</string>
+	</array>
+</dict>
+</plist>
