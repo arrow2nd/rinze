@@ -22,6 +22,7 @@ nix run /path/to/rinze#demo
 | `packages.<system>.rinze-nvim` | Neovim プラグイン (`vimUtils.buildVimPlugin`) |
 | `packages.<system>.fcitx5-rinze` | fcitx5 のアドオン ([fcitx5](../frontends/fcitx5.md))。Linux だけ |
 | `packages.<system>.demo`、`apps.<system>.demo` | 上の試用の入口 |
+| `homeManagerModules.default` | rinzed をログイン時に起動する home-manager のモジュール ([rinzed を常駐させる](#rinzed-を常駐させる)) |
 | `overlays.default` | 上の `rinzed`、`rinzed-unwrapped`、`rinze-zenz-model`、`rinze-nvim` を pkgs に足す |
 | `checks.<system>` | rinzed とプラグインのビルド、Lua と Rust の[検査](../development/lint.md)、既定のソケットのパスの一致 (Lua 側)、`setup` に何も渡さずに PATH の rinzed を起動して候補を引けること。Linux では fcitx5 のアドオンを testfrontend で打って確かめること ([fcitx5 のテスト](../development/testing.md#fcitx5-のテスト)) |
 
@@ -40,3 +41,25 @@ rinzed.override {
   # model = ...;
 }
 ```
+
+## rinzed を常駐させる
+
+rinzed は一度起動すると自分からは終了しない。フロントエンドが起動した rinzed は rinze を更新したあとも動き続け、フロントエンドごとに別の版の rinzed を指していると、先に起動したものが使われる。
+home-manager のモジュールで rinzed をサービスにすると、ログイン時に起動し、home-manager で更新したときに新しい版で起動し直すので、どのフロントエンドも同じ版の rinzed に繋がる。
+
+```nix
+# home-manager のモジュール
+{ inputs, ... }:
+{
+  imports = [ inputs.rinze.homeManagerModules.default ];
+  services.rinzed.enable = true;
+  # services.rinzed.package = ...;  # 既定は flake の rinzed
+}
+```
+
+- Linux では systemd のユーザーサービス (`rinzed.service`)、macOS では launchd のエージェント (`org.nix-community.home.rinzed`) になる。
+- `services.rinzed.package` を `home.packages` にも入れるので、`home.packages` に rinzed を書く必要は無い。サービスが止まっているときにフロントエンドが PATH から起動する rinzed も同じ版になる。
+- フロントエンドの設定は変えなくてよい。サービスの rinzed が待ち受けていれば、フロントエンドはそれに繋ぐだけで起動しない。
+- Linux ではユーザー辞書と学習の履歴の場所を home-manager の `xdg.dataHome` と `xdg.stateHome` から引数で渡す。サービスの環境には利用者のシェルの `XDG_DATA_HOME` と `XDG_STATE_HOME` が入らないため。
+- rinzed は変換のたびに読みと候補を標準エラー出力へ書くので、Linux では journal に残さず捨てる。起動に失敗したときの理由は、`rinzed` を端末から起動して確かめる。
+- ログインした時点から rinzed が常駐し、メモリを持ち続ける ([常駐メモリ](../architecture/performance.md#常駐メモリ))。

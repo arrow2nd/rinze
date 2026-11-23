@@ -31,6 +31,8 @@
     {
       overlays.default = import ./nix/overlay.nix;
 
+      homeManagerModules.default = import ./nix/home-manager.nix self;
+
       packages = forAll (pkgs: {
         default = pkgs.rinzed;
         inherit (pkgs)
