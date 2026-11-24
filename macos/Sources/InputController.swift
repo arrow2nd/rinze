@@ -1,54 +1,9 @@
 import Cocoa
 import InputMethodKit
 
-private let modeLabels: [(RinzeMode, String)] = [
-    (RINZE_MODE_HIRAGANA, "かな"),
-    (RINZE_MODE_KATAKANA, "カナ"),
-    (RINZE_MODE_HALFWIDTH_KATAKANA, "ｶﾅ"),
-    (RINZE_MODE_FULLWIDTH_LATIN, "全英"),
-    (RINZE_MODE_ASCII, "aA"),
-]
-
 private let leftContextWindow = 80
 private let startupPollInterval: TimeInterval = 0.1
 private let modeFlashInterval: TimeInterval = 1
-
-private enum KeyCode {
-    static let enter: UInt16 = 36
-    static let space: UInt16 = 49
-    static let backspace: UInt16 = 51
-    static let escape: UInt16 = 53
-    static let keypadEnter: UInt16 = 76
-    static let down: UInt16 = 125
-    static let up: UInt16 = 126
-}
-
-private func keyName(_ event: NSEvent) -> String? {
-    let modifiers = event.modifierFlags.intersection([.control, .command, .option])
-    if modifiers == .control {
-        switch event.charactersIgnoringModifiers?.lowercased() {
-        case "g": return "ctrl-g"
-        case "j": return "ctrl-j"
-        case "q": return "ctrl-q"
-        default: return nil
-        }
-    }
-    if !modifiers.isEmpty {
-        return nil
-    }
-    switch event.keyCode {
-    case KeyCode.space: return "space"
-    case KeyCode.enter, KeyCode.keypadEnter: return "enter"
-    case KeyCode.backspace: return "backspace"
-    default: break
-    }
-    guard let characters = event.characters, characters.unicodeScalars.count == 1,
-        let scalar = characters.unicodeScalars.first, (0x21...0x7e).contains(scalar.value)
-    else {
-        return nil
-    }
-    return characters
-}
 
 /// 入力欄 1 つぶんの rinzed の接続。表示は最後の応答をそのまま写し、入力の状態は rinzed だけが持つ。
 @objc(RinzeInputController)
@@ -59,6 +14,7 @@ final class RinzeInputController: IMKInputController {
     private var diagnosis = ""
     private var modeFlash = ""
     private var marked = false
+    private var selected: RinzeMode?
     private var startupTimer: Timer?
     private var modeTimer: Timer?
 
@@ -113,8 +69,34 @@ final class RinzeInputController: IMKInputController {
         if shown == nil {
             apply(rinze_client_discard(connection))
         } else {
+            // メニューバーの入力モードはアプリをまたいで 1 つなので、この入力欄のモードに合わせ直す
+            selected = nil
+            selectSource()
             render()
         }
+    }
+
+    // メニューバーや英数・かなキーで入力モードが選ばれた
+    override func setValue(_ value: Any!, forTag tag: Int, client sender: Any!) {
+        guard let id = value as? String, let bundle = Bundle.main.bundleIdentifier,
+            let target = modeInfo(sourceID: id, bundleIdentifier: bundle), let mode,
+            mode != target.mode
+        else {
+            return
+        }
+        selected = target.mode
+        apply(rinze_client_switch_mode(connection, target.mode))
+    }
+
+    /// メニューバーの入力モードを rinzed の入力モードに合わせる。
+    private func selectSource() {
+        guard let mode, mode != selected, let info = modeInfo(mode),
+            let bundle = Bundle.main.bundleIdentifier
+        else {
+            return
+        }
+        selected = mode
+        client()?.selectMode("\(bundle).\(info.source)")
     }
 
     // フォーカスが外れたときは、入力途中のものを確定せずに捨てる。入力モードは残る
@@ -166,15 +148,12 @@ final class RinzeInputController: IMKInputController {
         guard end != NSNotFound else {
             return nil
         }
-        let start = max(0, end - leftContextWindow)
-        if start == end {
+        let range = leftRange(end: end, window: leftContextWindow)
+        if range.length == 0 {
             return ("", 0)
         }
         var actual = NSRange(location: NSNotFound, length: 0)
-        guard
-            let text = client.string(
-                from: NSRange(location: start, length: end - start), actualRange: &actual)
-        else {
+        guard let text = client.string(from: range, actualRange: &actual) else {
             return nil
         }
         return (text, text.unicodeScalars.count)
@@ -212,6 +191,7 @@ final class RinzeInputController: IMKInputController {
         if let before, let after = mode, before != after {
             flashMode(after)
         }
+        selectSource()
         render()
         return handled
     }
@@ -270,7 +250,7 @@ final class RinzeInputController: IMKInputController {
     }
 
     private func flashMode(_ mode: RinzeMode) {
-        modeFlash = modeLabels.first { $0.0 == mode }?.1 ?? ""
+        modeFlash = modeInfo(mode)?.label ?? ""
         modeTimer?.invalidate()
         modeTimer = Timer.scheduledTimer(withTimeInterval: modeFlashInterval, repeats: false) {
             [weak self] _ in
