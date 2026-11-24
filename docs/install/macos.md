@@ -18,13 +18,17 @@
 }
 ```
 
-反映すると、flake の `rinze-macos` を `~/Library/Input Methods/rinze.app` に複製し、署名し直して、入力ソースを macOS に登録する。
+反映すると、flake の `rinze-macos` を `~/Library/Input Methods/rinze.app` に複製し、署名し直して、入力ソースを macOS に登録する。入力ソースを有効にするのは手でする ([入力ソースを足す](#入力ソースを足す))。
 
 - macOS はシンボリックリンクの入力メソッドを読まないので、ストアのものを複製して置く。複製元が変わったときだけ入れ替え、動いている rinze を終了する。次の打鍵で macOS が新しいものを起動する。
 - アプリが起動する rinzed は `services.rinzed.package` になる。辞書を `override` で変えた rinzed を渡せば、アプリもそれを使う。
 - 署名は手元だけで通る ad-hoc のもので、Apple の公証は受けていない。
 
-初めて入れたときは、システム設定の「キーボード」→「入力ソース」→「編集」で「日本語」と「英語」に並ぶ rinze の入力モードが入っていることを確かめ、メニューバーの入力メニューから rinze を選ぶ。一覧に出ないときはログインし直す。
+## 入力ソースを足す
+
+初めて入れたときは、システム設定の「キーボード」→「入力ソース」→「編集」→「＋」で、「日本語」にある rinze を足し、メニューバーの入力メニューから rinze を選ぶ。一覧に出ないときはログインし直す。
+
+macOS は、利用者がシステム設定で足した入力ソースだけを覚える。コマンドから有効にしても、ログインし直すと外れる。
 
 ## 手元で組んで入れる
 
@@ -44,7 +48,7 @@ pkill -x rinze
 ~/Library/Input\ Methods/rinze.app/Contents/MacOS/rinze --register
 ```
 
-`rinze --register` は入力ソースを macOS に登録して有効にし、すぐ終わる。`RINZED` を渡さずに組んだときは、[`defaults` の `rinzed`](../frontends/macos.md#rinzed-の起動と応答の待ち) で rinzed の場所を渡す。
+`rinze --register` は入力ソースを macOS に登録し、すぐ終わる。そのあと[入力ソースを足す](#入力ソースを足す)。`RINZED` を渡さずに組んだときは、[`defaults` の `rinzed`](../frontends/macos.md#rinzed-の起動と応答の待ち) で rinzed の場所を渡す。
 
 ## 外す
 

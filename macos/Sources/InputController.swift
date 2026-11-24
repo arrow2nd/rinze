@@ -14,7 +14,6 @@ final class RinzeInputController: IMKInputController {
     private var diagnosis = ""
     private var modeFlash = ""
     private var marked = false
-    private var selected: RinzeMode?
     private var startupTimer: Timer?
     private var modeTimer: Timer?
 
@@ -69,34 +68,8 @@ final class RinzeInputController: IMKInputController {
         if shown == nil {
             apply(rinze_client_discard(connection))
         } else {
-            // メニューバーの入力モードはアプリをまたいで 1 つなので、この入力欄のモードに合わせ直す
-            selected = nil
-            selectSource()
             render()
         }
-    }
-
-    // メニューバーや英数・かなキーで入力モードが選ばれた
-    override func setValue(_ value: Any!, forTag tag: Int, client sender: Any!) {
-        guard let id = value as? String, let bundle = Bundle.main.bundleIdentifier,
-            let target = modeInfo(sourceID: id, bundleIdentifier: bundle), let mode,
-            mode != target.mode
-        else {
-            return
-        }
-        selected = target.mode
-        apply(rinze_client_switch_mode(connection, target.mode))
-    }
-
-    /// メニューバーの入力モードを rinzed の入力モードに合わせる。
-    private func selectSource() {
-        guard let mode, mode != selected, let info = modeInfo(mode),
-            let bundle = Bundle.main.bundleIdentifier
-        else {
-            return
-        }
-        selected = mode
-        client()?.selectMode("\(bundle).\(info.source)")
     }
 
     // フォーカスが外れたときは、入力途中のものを確定せずに捨てる。入力モードは残る
@@ -191,7 +164,6 @@ final class RinzeInputController: IMKInputController {
         if let before, let after = mode, before != after {
             flashMode(after)
         }
-        selectSource()
         render()
         return handled
     }
@@ -250,7 +222,7 @@ final class RinzeInputController: IMKInputController {
     }
 
     private func flashMode(_ mode: RinzeMode) {
-        modeFlash = modeInfo(mode)?.label ?? ""
+        modeFlash = modeLabel(mode)
         modeTimer?.invalidate()
         modeTimer = Timer.scheduledTimer(withTimeInterval: modeFlashInterval, repeats: false) {
             [weak self] _ in
