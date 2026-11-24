@@ -107,9 +107,32 @@ fn parse_args(
 }
 
 fn default_threads() -> i32 {
-    std::thread::available_parallelism().map_or(DEFAULT_THREADS_WHEN_UNKNOWN, |n| {
-        n.get().min(DEFAULT_THREADS_CAP)
-    }) as i32
+    performance_cores()
+        .or_else(|| std::thread::available_parallelism().ok().map(usize::from))
+        .map_or(DEFAULT_THREADS_WHEN_UNKNOWN, |n| n.min(DEFAULT_THREADS_CAP)) as i32
+}
+
+/// Apple Silicon の高性能コアの数。高効率コアにもスレッドを置くと、遅いコアを待つぶん点数づけが遅くなる。
+#[cfg(target_os = "macos")]
+fn performance_cores() -> Option<usize> {
+    let mut count: libc::c_int = 0;
+    let mut size = size_of::<libc::c_int>();
+    // SAFETY: 名前は NUL 終端で、count と size は呼び出しの間だけ使う c_int 1 つぶんの領域を指す
+    let status = unsafe {
+        libc::sysctlbyname(
+            c"hw.perflevel0.physicalcpu".as_ptr(),
+            (&raw mut count).cast(),
+            &raw mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (status == 0 && count > 0).then_some(count as usize)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn performance_cores() -> Option<usize> {
+    None
 }
 
 fn home(home: Option<OsString>) -> Result<PathBuf, String> {
@@ -359,7 +382,21 @@ mod tests {
     use std::ffi::OsString;
     use std::path::PathBuf;
 
-    use super::{Args, LearningArg, parse_args};
+    use super::{Args, DEFAULT_THREADS_CAP, LearningArg, default_threads, parse_args};
+
+    #[test]
+    fn 既定のスレッドの数は論理_cpu_の数と上限を超えない() {
+        let logical = std::thread::available_parallelism().map_or(usize::MAX, usize::from);
+        let threads = default_threads() as usize;
+        assert!((1..=logical.min(DEFAULT_THREADS_CAP)).contains(&threads));
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn apple_silicon_では高性能コアの数を既定にする() {
+        let cores = super::performance_cores().expect("hw.perflevel0.physicalcpu を読めない");
+        assert_eq!(default_threads() as usize, cores.min(DEFAULT_THREADS_CAP));
+    }
 
     fn parse(args: &[&str], env: &[(&str, &str)]) -> Result<Args, String> {
         let fixed = ["--socket", "/s", "--user-dict", "/u", "--no-learning"];

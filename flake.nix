@@ -183,6 +183,9 @@
           // pkgs.lib.optionalAttrs (pkgs.rinzed-unwrapped ? RUSTFLAGS) {
             inherit (pkgs.rinzed-unwrapped) RUSTFLAGS;
           }
+          // pkgs.lib.optionalAttrs (pkgs.rinzed-unwrapped ? GGML_METAL) {
+            inherit (pkgs.rinzed-unwrapped) GGML_METAL;
+          }
         );
       });
     };
