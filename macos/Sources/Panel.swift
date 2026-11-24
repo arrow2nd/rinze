@@ -6,6 +6,8 @@ final class Panel {
 
     private let window: NSPanel
     private let label = NSTextField(wrappingLabelWithString: "")
+    private weak var owner: AnyObject?
+    private var lastCursor: NSRect?
 
     private init() {
         window = NSPanel(
@@ -15,6 +17,8 @@ final class Panel {
         window.hasShadow = true
         window.isOpaque = false
         window.backgroundColor = .clear
+        // フルスクリーンのアプリとほかのスペースでも、入力欄の上に出す
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
 
         let background = NSVisualEffectView()
         background.material = .popover
@@ -33,11 +37,15 @@ final class Panel {
         window.contentView = background
     }
 
-    func show(lines: [String], below cursor: NSRect) {
+    /// `cursor` が nil のとき (アプリがカーソルの位置を返さない) は、前に出した位置かマウスの位置に出す。
+    func show(lines: [String], below cursor: NSRect?, owner: AnyObject) {
         guard !lines.isEmpty else {
-            hide()
+            hide(owner: owner)
             return
         }
+        self.owner = owner
+        let cursor = cursor ?? lastCursor ?? NSRect(origin: NSEvent.mouseLocation, size: .zero)
+        lastCursor = cursor
         label.stringValue = lines.joined(separator: "\n")
         label.preferredMaxLayoutWidth = 480
         let text = label.intrinsicContentSize
@@ -54,7 +62,13 @@ final class Panel {
         window.orderFront(nil)
     }
 
-    func hide() {
+    /// パネルは入力欄どうしで共有する。ほかの入力欄が出したものは消さない
+    func hide(owner: AnyObject) {
+        guard self.owner === owner else {
+            return
+        }
+        self.owner = nil
+        lastCursor = nil
         window.orderOut(nil)
     }
 }

@@ -14,6 +14,7 @@ final class RinzeInputController: IMKInputController {
     private var diagnosis = ""
     private var modeFlash = ""
     private var marked = false
+    private var active = false
     private var startupTimer: Timer?
     private var modeTimer: Timer?
 
@@ -65,6 +66,7 @@ final class RinzeInputController: IMKInputController {
     }
 
     override func activateServer(_ sender: Any!) {
+        active = true
         if shown == nil {
             apply(rinze_client_discard(connection))
         } else {
@@ -75,7 +77,8 @@ final class RinzeInputController: IMKInputController {
     // フォーカスが外れたときは、入力途中のものを確定せずに捨てる。入力モードは残る
     override func deactivateServer(_ sender: Any!) {
         discard()
-        Panel.shared.hide()
+        active = false
+        Panel.shared.hide(owner: self)
     }
 
     // 入力ソースを切り替えたときやアプリが確定を求めたときは、表示どおりに確定する
@@ -185,6 +188,10 @@ final class RinzeInputController: IMKInputController {
                 replacementRange: NSRange(location: NSNotFound, length: 0))
         }
         marked = !preedit.isEmpty
+        // フォーカスの無い入力欄がタイマーから描き直しても、いま打っている入力欄のパネルに触れない
+        guard active else {
+            return
+        }
 
         var lines: [String] = []
         if !notice.isEmpty {
@@ -216,9 +223,18 @@ final class RinzeInputController: IMKInputController {
         if Service.shared.debug && !diagnosis.isEmpty {
             lines.append(diagnosis)
         }
-        var cursor = NSRect.zero
-        client.attributes(forCharacterIndex: 0, lineHeightRectangle: &cursor)
-        Panel.shared.show(lines: lines, below: cursor)
+        Panel.shared.show(lines: lines, below: cursorRect(client), owner: self)
+    }
+
+    /// カーソルの画面上の位置。未確定文字列が無いときは選択範囲から取り、どちらも取れなければ nil。
+    private func cursorRect(_ client: IMKTextInput & NSObjectProtocol) -> NSRect? {
+        var rect = NSRect.zero
+        client.attributes(forCharacterIndex: 0, lineHeightRectangle: &rect)
+        if rect == .zero {
+            var actual = NSRange(location: NSNotFound, length: 0)
+            rect = client.firstRect(forCharacterRange: client.selectedRange(), actualRange: &actual)
+        }
+        return rect == .zero ? nil : rect
     }
 
     private func flashMode(_ mode: RinzeMode) {
