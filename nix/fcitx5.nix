@@ -1,7 +1,7 @@
 {
   lib,
   stdenv,
-  rustPlatform,
+  callPackage,
   cmake,
   kdePackages,
   pkg-config,
@@ -11,31 +11,7 @@
 let
   version = (lib.importTOML ../Cargo.toml).workspace.package.version;
 
-  rinze-client = rustPlatform.buildRustPackage {
-    pname = "rinze-client";
-    inherit version;
-    src = lib.fileset.toSource {
-      root = ../.;
-      fileset = lib.fileset.unions [
-        ../Cargo.toml
-        ../Cargo.lock
-        ../crates
-      ];
-    };
-    cargoLock.lockFile = ../Cargo.lock;
-    cargoBuildFlags = [
-      "-p"
-      "rinze-client"
-    ];
-    cargoTestFlags = [
-      "-p"
-      "rinze-client"
-    ];
-    postInstall = ''
-      mkdir -p $out/include
-      cp crates/rinze-client/include/rinze_client.h $out/include/
-    '';
-  };
+  rinze-client = callPackage ./rinze-client.nix { };
 in
 stdenv.mkDerivation {
   pname = "fcitx5-rinze";
