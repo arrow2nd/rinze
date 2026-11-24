@@ -18,9 +18,25 @@ in
       defaultText = lib.literalExpression "rinze.packages.\${system}.rinzed";
       description = "常駐させる rinzed。PATH にも入れるので、サービスが止まっているときにフロントエンドが起動するのも同じ版になる。";
     };
+    macos = {
+      enable = lib.mkEnableOption "macOS の入力メソッド (rinze.app) を ~/Library/Input Methods に入れる";
+      package = lib.mkOption {
+        type = lib.types.package;
+        default = self.packages.${system}.rinze-macos.override { rinzed = cfg.package; };
+        defaultText = lib.literalExpression "rinze.packages.\${system}.rinze-macos.override { rinzed = cfg.package; }";
+        description = "入れる rinze.app。サービスが止まっているときは、これが `services.rinzed.package` の rinzed を起動する。";
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = cfg.macos.enable -> isDarwin;
+        message = "services.rinzed.macos.enable は macOS でだけ使える";
+      }
+    ];
+
     home.packages = [ cfg.package ];
 
     systemd.user.services.rinzed = lib.mkIf isLinux {
@@ -52,5 +68,25 @@ in
         ProcessType = "Interactive";
       };
     };
+
+    # macOS はシンボリックリンクの入力メソッドを読まないので、複製して置く。
+    # 動いているアプリを上書きすると署名が合わなくなって起動できないので、消してから複製し、署名し直す
+    home.activation.rinzeMacos = lib.mkIf cfg.macos.enable (
+      lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+        rinzeSource="${cfg.macos.package}/Library/Input Methods/rinze.app"
+        rinzeApp="$HOME/Library/Input Methods/rinze.app"
+        rinzeStamp="$HOME/Library/Input Methods/.rinze.app.source"
+        if [ ! -d "$rinzeApp" ] || [ "$(cat "$rinzeStamp" 2>/dev/null)" != "$rinzeSource" ]; then
+          run mkdir -p "$HOME/Library/Input Methods"
+          run rm -rf "$rinzeApp"
+          run cp -R "$rinzeSource" "$rinzeApp"
+          run chmod -R u+w "$rinzeApp"
+          run /usr/bin/codesign --force --sign - "$rinzeApp"
+          run /usr/bin/pkill -x rinze || true
+          run "$rinzeApp/Contents/MacOS/rinze" --register
+          run sh -c 'printf %s "$1" > "$2"' sh "$rinzeSource" "$rinzeStamp"
+        fi
+      ''
+    );
   };
 }

@@ -48,6 +48,8 @@
         demo = pkgs.callPackage ./nix/demo.nix { };
       } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
         fcitx5-rinze = pkgs.callPackage ./nix/fcitx5.nix { };
+      } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
+        rinze-macos = pkgs.callPackage ./nix/macos.nix { };
       });
 
       apps = forAll (pkgs: {
@@ -60,6 +62,8 @@
 
       checks = forAll (pkgs: pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
         fcitx5-rinze = (pkgs.callPackage ./nix/fcitx5.nix { }).overrideAttrs { doCheck = true; };
+      } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
+        rinze-macos = pkgs.callPackage ./nix/macos.nix { };
       } // {
         inherit (pkgs) rinzed rinze-nvim;
         lint-lua =
