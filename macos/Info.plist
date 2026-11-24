@@ -28,6 +28,8 @@
 	<string>io.github.arrow2nd.inputmethod.rinze_Connection</string>
 	<key>InputMethodServerControllerClass</key>
 	<string>RinzeInputController</string>
+	<key>TISInputSourceID</key>
+	<string>io.github.arrow2nd.inputmethod.rinze</string>
 	<key>TISIntendedLanguage</key>
 	<string>ja</string>
 	<key>tsInputMethodCharacterRepertoireKey</key>
@@ -39,125 +41,6 @@
 	<key>TISIconIsTemplate</key>
 	<true/>
 	<key>tsInputMethodIconFileKey</key>
-	<string>hiragana.tiff</string>
-	<key>ComponentInputModeDict</key>
-	<dict>
-		<key>tsInputModeListKey</key>
-		<dict>
-			<key>io.github.arrow2nd.inputmethod.rinze.hiragana</key>
-			<dict>
-				<key>TISInputSourceID</key>
-				<string>io.github.arrow2nd.inputmethod.rinze.hiragana</string>
-				<key>TISIntendedLanguage</key>
-				<string>ja</string>
-				<key>tsInputModeDefaultStateKey</key>
-				<true/>
-				<key>tsInputModeIsVisibleKey</key>
-				<true/>
-				<key>tsInputModeJISKeyboardShortcutKey</key>
-				<integer>1</integer>
-				<key>tsInputModeMenuIconFileKey</key>
-				<string>hiragana.tiff</string>
-				<key>tsInputModePaletteIconFileKey</key>
-				<string>hiragana.tiff</string>
-				<key>tsInputModePrimaryInScriptKey</key>
-				<true/>
-				<key>tsInputModeScriptKey</key>
-				<string>smJapanese</string>
-			</dict>
-			<key>io.github.arrow2nd.inputmethod.rinze.katakana</key>
-			<dict>
-				<key>TISInputSourceID</key>
-				<string>io.github.arrow2nd.inputmethod.rinze.katakana</string>
-				<key>TISIntendedLanguage</key>
-				<string>ja</string>
-				<key>tsInputModeDefaultStateKey</key>
-				<true/>
-				<key>tsInputModeIsVisibleKey</key>
-				<true/>
-				<key>tsInputModeJISKeyboardShortcutKey</key>
-				<integer>2</integer>
-				<key>tsInputModeMenuIconFileKey</key>
-				<string>katakana.tiff</string>
-				<key>tsInputModePaletteIconFileKey</key>
-				<string>katakana.tiff</string>
-				<key>tsInputModePrimaryInScriptKey</key>
-				<false/>
-				<key>tsInputModeScriptKey</key>
-				<string>smJapanese</string>
-			</dict>
-			<key>io.github.arrow2nd.inputmethod.rinze.halfwidth-katakana</key>
-			<dict>
-				<key>TISInputSourceID</key>
-				<string>io.github.arrow2nd.inputmethod.rinze.halfwidth-katakana</string>
-				<key>TISIntendedLanguage</key>
-				<string>ja</string>
-				<key>tsInputModeDefaultStateKey</key>
-				<true/>
-				<key>tsInputModeIsVisibleKey</key>
-				<true/>
-				<key>tsInputModeJISKeyboardShortcutKey</key>
-				<integer>0</integer>
-				<key>tsInputModeMenuIconFileKey</key>
-				<string>halfwidth-katakana.tiff</string>
-				<key>tsInputModePaletteIconFileKey</key>
-				<string>halfwidth-katakana.tiff</string>
-				<key>tsInputModePrimaryInScriptKey</key>
-				<false/>
-				<key>tsInputModeScriptKey</key>
-				<string>smJapanese</string>
-			</dict>
-			<key>io.github.arrow2nd.inputmethod.rinze.fullwidth-latin</key>
-			<dict>
-				<key>TISInputSourceID</key>
-				<string>io.github.arrow2nd.inputmethod.rinze.fullwidth-latin</string>
-				<key>TISIntendedLanguage</key>
-				<string>ja</string>
-				<key>tsInputModeDefaultStateKey</key>
-				<true/>
-				<key>tsInputModeIsVisibleKey</key>
-				<true/>
-				<key>tsInputModeJISKeyboardShortcutKey</key>
-				<integer>0</integer>
-				<key>tsInputModeMenuIconFileKey</key>
-				<string>fullwidth-latin.tiff</string>
-				<key>tsInputModePaletteIconFileKey</key>
-				<string>fullwidth-latin.tiff</string>
-				<key>tsInputModePrimaryInScriptKey</key>
-				<false/>
-				<key>tsInputModeScriptKey</key>
-				<string>smJapanese</string>
-			</dict>
-			<key>io.github.arrow2nd.inputmethod.rinze.ascii</key>
-			<dict>
-				<key>TISInputSourceID</key>
-				<string>io.github.arrow2nd.inputmethod.rinze.ascii</string>
-				<key>TISIntendedLanguage</key>
-				<string>en</string>
-				<key>tsInputModeDefaultStateKey</key>
-				<true/>
-				<key>tsInputModeIsVisibleKey</key>
-				<true/>
-				<key>tsInputModeJISKeyboardShortcutKey</key>
-				<integer>3</integer>
-				<key>tsInputModeMenuIconFileKey</key>
-				<string>ascii.tiff</string>
-				<key>tsInputModePaletteIconFileKey</key>
-				<string>ascii.tiff</string>
-				<key>tsInputModePrimaryInScriptKey</key>
-				<true/>
-				<key>tsInputModeScriptKey</key>
-				<string>smRoman</string>
-			</dict>
-		</dict>
-		<key>tsVisibleInputModeOrderedArrayKey</key>
-		<array>
-			<string>io.github.arrow2nd.inputmethod.rinze.hiragana</string>
-			<string>io.github.arrow2nd.inputmethod.rinze.katakana</string>
-			<string>io.github.arrow2nd.inputmethod.rinze.halfwidth-katakana</string>
-			<string>io.github.arrow2nd.inputmethod.rinze.fullwidth-latin</string>
-			<string>io.github.arrow2nd.inputmethod.rinze.ascii</string>
-		</array>
-	</dict>
+	<string>rinze.tiff</string>
 </dict>
 </plist>

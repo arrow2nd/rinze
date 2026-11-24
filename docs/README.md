@@ -28,7 +28,7 @@ rinze の導入・使い方・フロントエンド別仕様・内部構成・�
 | [Neovim のコマンドライン](frontends/neovim-cmdline.md) | `/` `?` `:` での入力、フロート表示、左文脈、blink.cmp 補完との兼ね合い |
 | [blink.cmp との連携](frontends/neovim-blink.md) | `blink = true`、`enter` preset の上書き、内部 API 依存 |
 | [fcitx5](frontends/fcitx5.md) | C++ / `rinze-client` 構成、打ち方・表示、rinzed の起動と応答待ち、左文脈、診断 |
-| [macOS](frontends/macos.md) | Swift / InputMethodKit / `rinze-client` 構成、打ち方・表示、入力モードと入力ソース、左文脈、設定と診断 |
+| [macOS](frontends/macos.md) | Swift / InputMethodKit / `rinze-client` 構成、打ち方・表示、左文脈、設定と診断 |
 
 ## [構成と内部仕様](architecture/README.md)
 

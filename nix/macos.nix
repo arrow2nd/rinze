@@ -41,7 +41,7 @@ stdenv.mkDerivation {
     app="$out/Library/Input Methods/rinze.app/Contents"
     mkdir -p "$app/MacOS" "$app/Resources"
     cp rinze "$app/MacOS/rinze"
-    cp Resources/*.tiff "$app/Resources/"
+    cp -R Resources/. "$app/Resources/"
     sed 's|^</dict>$|\t<key>RinzedPath</key>\n\t<string>${lib.getExe rinzed}</string>\n</dict>|' \
       Info.plist > "$app/Info.plist"
     runHook postInstall

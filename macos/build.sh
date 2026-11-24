@@ -7,7 +7,7 @@ cargo build --release -p rinze-client
 app=macos/build/rinze.app
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp macos/Info.plist "$app/Contents/Info.plist"
-cp macos/Resources/*.tiff "$app/Contents/Resources/"
+cp -R macos/Resources/. "$app/Contents/Resources/"
 if [ -n "${RINZED:-}" ]; then
   plutil -replace RinzedPath -string "$RINZED" "$app/Contents/Info.plist"
 fi

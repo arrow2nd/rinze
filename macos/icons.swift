@@ -1,15 +1,9 @@
-// メニューバーに出す入力モードのアイコンを作る。
+// メニューバーの入力メニューに出すアイコンを作る。
 //   swift macos/icons.swift macos/Resources
 // 作った TIFF はリポジトリに入れてあるので、字や大きさを変えるときだけ走らせる
 import Cocoa
 
-let glyphs = [
-    ("hiragana", "あ"),
-    ("katakana", "ア"),
-    ("halfwidth-katakana", "ｱ"),
-    ("fullwidth-latin", "Ａ"),
-    ("ascii", "A"),
-]
+let glyphs = [("rinze", "あ")]
 let points: CGFloat = 16
 let directory = URL(fileURLWithPath: CommandLine.arguments[1])
 

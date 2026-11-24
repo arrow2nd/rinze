@@ -57,35 +57,19 @@ expect(leftRange(end: 100, window: 80), NSRange(location: 20, length: 80), "wind
 expect(leftRange(end: 30, window: 80), NSRange(location: 0, length: 30), "window より短い")
 expect(leftRange(end: 0, window: 80), NSRange(location: 0, length: 0), "先頭")
 
-// 入力ソースの識別子と入力モードの対応
-let bundle = "io.github.arrow2nd.inputmethod.rinze"
-for info in modes {
-    expect(
-        modeInfo(sourceID: "\(bundle).\(info.source)", bundleIdentifier: bundle)?.mode, info.mode,
-        info.source)
-    expect(modeInfo(info.mode)?.source, info.source, info.label)
-}
-expect(modeInfo(sourceID: bundle, bundleIdentifier: bundle)?.mode, nil, "モードの無い識別子")
-expect(modeInfo(sourceID: "\(bundle).unknown", bundleIdentifier: bundle)?.mode, nil, "知らないモード")
-expect(
-    modeInfo(sourceID: "com.example.hiragana", bundleIdentifier: bundle)?.mode, nil,
-    "ほかの入力メソッドの識別子")
+// 入力モードのラベル
+expect(modeLabel(RINZE_MODE_HIRAGANA), "かな", "ひらがな")
+expect(modeLabel(RINZE_MODE_KATAKANA), "カナ", "カタカナ")
+expect(modeLabel(RINZE_MODE_HALFWIDTH_KATAKANA), "ｶﾅ", "半角カナ")
+expect(modeLabel(RINZE_MODE_FULLWIDTH_LATIN), "全英", "全角英字")
+expect(modeLabel(RINZE_MODE_ASCII), "aA", "ASCII")
 
-// Info.plist の入力モードは、コードの対応とアイコンの両方と揃っている
+// Info.plist の指すアイコンがある
 let plist = NSDictionary(contentsOfFile: CommandLine.arguments[1])!
-let component = plist["ComponentInputModeDict"] as! [String: Any]
-let listed = component["tsInputModeListKey"] as! [String: [String: Any]]
-let expected = Set(modes.map { "\(bundle).\($0.source)" })
-expect(Set(listed.keys), expected, "Info.plist の入力モード")
+let icon = plist["tsInputMethodIconFileKey"] as! String
 expect(
-    Set(component["tsVisibleInputModeOrderedArrayKey"] as! [String]), expected,
-    "Info.plist の入力モードの並び")
-for (id, entry) in listed {
-    expect(entry["TISInputSourceID"] as? String, id, "\(id) の TISInputSourceID")
-    let icon = entry["tsInputModeMenuIconFileKey"] as! String
-    let path = "\(CommandLine.arguments[2])/\(icon)"
-    expect(FileManager.default.fileExists(atPath: path), true, "\(icon) がある")
-}
+    FileManager.default.fileExists(atPath: "\(CommandLine.arguments[2])/\(icon)"), true,
+    "\(icon) がある")
 
 if failures > 0 {
     print("\(failures) 件の失敗")
