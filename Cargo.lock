@@ -462,6 +462,7 @@ dependencies = [
 name = "rinzed"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "rinze-dict",
  "rinze-engine",
  "rinze-socket",

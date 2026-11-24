@@ -19,6 +19,7 @@ nvim --headless --clean -l tests/nvim/default_socket.lua
 ```
 
 x86_64 では flake が `RUSTFLAGS` で AVX2 などを明示する。指定しないと ggml の SIMD が無効になり、変換が約 5 倍遅くなる。
+macOS では `GGML_METAL=OFF` で llama.cpp の Metal のバックエンドを外す ([Apple Silicon](../architecture/performance.md#apple-silicon))。`nix develop` の中の `cargo build` にも同じ値が入る。
 
 ## モデルと辞書の環境変数
 

@@ -38,6 +38,11 @@ in
     // lib.optionalAttrs final.stdenv.hostPlatform.isx86_64 {
       RUSTFLAGS = "-C target-feature=+avx,+avx2,+fma,+f16c,+bmi2";
     }
+    # zenz は CPU だけで動かす (n_gpu_layers 0)。Metal のバックエンドは使わないのに初期化で約 33 MB を持つので、ビルドから外す。
+    # build.rs は GGML_ で始まる環境変数を cmake に渡す
+    // lib.optionalAttrs final.stdenv.hostPlatform.isDarwin {
+      GGML_METAL = "OFF";
+    }
   );
 
   rinze-zenz-model = final.fetchurl {
