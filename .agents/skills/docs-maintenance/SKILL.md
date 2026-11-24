@@ -23,7 +23,7 @@ docs/
 │   └── README.md                  # カテゴリ索引 + 各トピック .md
 ├── usage/                         # 打ち方・モード・ローマ字・辞書・学習
 │   └── README.md
-├── frontends/                     # Neovim / コマンドライン / blink.cmp / fcitx5
+├── frontends/                     # Neovim / コマンドライン / blink.cmp / fcitx5 / macOS
 │   └── README.md
 ├── architecture/                  # クレート構成・msgpack-rpc 通信・性能と資源
 │   └── README.md
@@ -44,6 +44,7 @@ docs/
 | --- | --- |
 | `flake.nix`, `nix/demo.*`, `nix/overlay.nix` | `docs/install/flake.md`, `docs/install/neovim.md`, `docs/development/setup.md` |
 | `nix/fcitx5.nix`, NixOS / fcitx5 導入 | `docs/install/fcitx5.md` |
+| `nix/macos.nix`, `nix/home-manager.nix`, macOS への導入 | `docs/install/macos.md`, `docs/install/flake.md` |
 | `crates/rinze-engine/` (打ち方・abbrev・辞書登録・`X`) | `docs/usage/typing.md` |
 | `crates/rinze-engine/src/romaji.rs`, `script.rs` (モード・ローマ字) | `docs/usage/modes.md` |
 | `crates/rinze-dict/`, 既定辞書・複数辞書・`user.jisyo` | `docs/usage/dictionaries.md` |
@@ -56,6 +57,7 @@ docs/
 | `nvim/lua/rinze/cmdline.lua` | `docs/frontends/neovim-cmdline.md` |
 | `nvim/lua/rinze/blink.lua` | `docs/frontends/neovim-blink.md` |
 | `fcitx5/`, `crates/rinze-client/` | `docs/frontends/fcitx5.md`, `docs/architecture/performance.md`, `docs/development/testing.md` |
+| `macos/` | `docs/frontends/macos.md`, `docs/install/macos.md`, `docs/development/testing.md` |
 | `tests/lint.sh`, `.stylua.toml`, `.luacheckrc`, `clippy.toml` | `docs/development/lint.md` |
 | `tests/nvim/`, `corpus.tsv`, `fcitx5/test/` | `docs/development/testing.md` |
 

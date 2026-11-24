@@ -9,6 +9,7 @@ rinze の導入・使い方・フロントエンド別仕様・内部構成・�
 | [flake で入れる](install/flake.md) | 試用 (`demo`)、flake の出力一覧、モデルと辞書の既定値の変更 (`override`) |
 | [Neovim に入れる](install/neovim.md) | home-manager と lazy.nvim、overlay (`programs.neovim`)、nixvim での導入 |
 | [fcitx5 で入れる](install/fcitx5.md) | NixOS での fcitx5 アドオン導入、`fcitx5-skk` と並べて使う設定 |
+| [macOS で入れる](install/macos.md) | home-manager での入力メソッドの導入、手元で組んで入れる手順 |
 
 ## [打ち方と変換の仕組み](usage/README.md)
 
@@ -27,6 +28,7 @@ rinze の導入・使い方・フロントエンド別仕様・内部構成・�
 | [Neovim のコマンドライン](frontends/neovim-cmdline.md) | `/` `?` `:` での入力、フロート表示、左文脈、blink.cmp 補完との兼ね合い |
 | [blink.cmp との連携](frontends/neovim-blink.md) | `blink = true`、`enter` preset の上書き、内部 API 依存 |
 | [fcitx5](frontends/fcitx5.md) | C++ / `rinze-client` 構成、打ち方・表示、rinzed の起動と応答待ち、左文脈、診断 |
+| [macOS](frontends/macos.md) | Swift / InputMethodKit / `rinze-client` 構成、打ち方・表示、入力モードと入力ソース、左文脈、設定と診断 |
 
 ## [構成と内部仕様](architecture/README.md)
 
@@ -42,4 +44,4 @@ rinze の導入・使い方・フロントエンド別仕様・内部構成・�
 | --- | --- |
 | [開発環境](development/setup.md) | `nix develop`、基本コマンド、既定ソケットの一致テスト、`RUSTFLAGS`、環境変数 |
 | [検査](development/lint.md) | `tests/lint.sh` による Lua / Rust のフォーマット・リンタ・複雑性検査 |
-| [テストと評価](development/testing.md) | モデルが要るテスト、日常の文章での 1 位正解率 (`corpus.sh`)、fcitx5 のテスト |
+| [テストと評価](development/testing.md) | モデルが要るテスト、日常の文章での 1 位正解率 (`corpus.sh`)、fcitx5 のテスト、macOS のテスト |

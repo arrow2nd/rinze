@@ -21,10 +21,11 @@ nix run /path/to/rinze#demo
 | `packages.<system>.rinze-dictionaries` | 既定の SKK 辞書を `share/skk` にまとめたもの |
 | `packages.<system>.rinze-nvim` | Neovim プラグイン (`vimUtils.buildVimPlugin`) |
 | `packages.<system>.fcitx5-rinze` | fcitx5 のアドオン ([fcitx5](../frontends/fcitx5.md))。Linux だけ |
+| `packages.<system>.rinze-macos` | macOS の入力メソッド ([macOS](../frontends/macos.md))。`Library/Input Methods/rinze.app` を持つ。macOS だけ |
 | `packages.<system>.demo`、`apps.<system>.demo` | 上の試用の入口 |
-| `homeManagerModules.default` | rinzed をログイン時に起動する home-manager のモジュール ([rinzed を常駐させる](#rinzed-を常駐させる)) |
+| `homeManagerModules.default` | rinzed をログイン時に起動し、macOS では入力メソッドも入れる home-manager のモジュール ([rinzed を常駐させる](#rinzed-を常駐させる)) |
 | `overlays.default` | 上の `rinzed`、`rinzed-unwrapped`、`rinze-zenz-model`、`rinze-nvim` を pkgs に足す |
-| `checks.<system>` | rinzed とプラグインのビルド、Lua と Rust の[検査](../development/lint.md)、既定のソケットのパスの一致 (Lua 側)、`setup` に何も渡さずに PATH の rinzed を起動して候補を引けること。Linux では fcitx5 のアドオンを testfrontend で打って確かめること ([fcitx5 のテスト](../development/testing.md#fcitx5-のテスト)) |
+| `checks.<system>` | rinzed とプラグインのビルド、Lua と Rust の[検査](../development/lint.md)、既定のソケットのパスの一致 (Lua 側)、`setup` に何も渡さずに PATH の rinzed を起動して候補を引けること。Linux では fcitx5 のアドオンを testfrontend で打って確かめること ([fcitx5 のテスト](../development/testing.md#fcitx5-のテスト))。macOS では入力メソッドを組んで、キーの対応づけなどを確かめること ([macOS のテスト](../development/testing.md#macos-のテスト)) |
 
 system は `x86_64-linux`、`aarch64-linux`、`aarch64-darwin`。バイナリキャッシュは無いので、rinzed は手元で llama.cpp ごとビルドする。
 
@@ -62,4 +63,5 @@ home-manager のモジュールで rinzed をサービスにすると、ログ�
 - フロントエンドの設定は変えなくてよい。サービスの rinzed が待ち受けていれば、フロントエンドはそれに繋ぐだけで起動しない。
 - Linux ではユーザー辞書と学習の履歴の場所を home-manager の `xdg.dataHome` と `xdg.stateHome` から引数で渡す。サービスの環境には利用者のシェルの `XDG_DATA_HOME` と `XDG_STATE_HOME` が入らないため。
 - rinzed は変換のたびに読みと候補を標準エラー出力へ書くので、Linux では journal に残さず捨てる。起動に失敗したときの理由は、`rinzed` を端末から起動して確かめる。
+- macOS では `services.rinzed.macos.enable` で入力メソッドも入れる ([macOS で入れる](macos.md))。
 - ログインした時点から rinzed が常駐し、メモリを持ち続ける ([常駐メモリ](../architecture/performance.md#常駐メモリ))。

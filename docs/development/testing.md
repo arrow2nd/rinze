@@ -59,3 +59,18 @@ fcitx5 の testfrontend でアドオンを画面なしで読み込み、打鍵�
 
 あわせて、共有ライブラリが外に出すシンボルを確かめる (`fcitx5/test/exports.cmake`)。
 手元で cmake でビルドする場合は、`cargo build --release -p rinze-client` のあとで `nix develop .#fcitx5-rinze` に入り、`-DRINZE_CLIENT_LIB=target/release/librinze_client.a -DRINZE_CLIENT_INCLUDE=crates/rinze-client/include` を渡して `fcitx5/` をビルドし、ビルドディレクトリで `RINZED=<rinzed のパス> ctest --output-on-failure` を走らせる。
+
+## macOS のテスト
+
+```sh
+macos/test.sh
+nix build .#checks.aarch64-darwin.rinze-macos -L
+```
+
+rinzed にも入力欄にも触れずに確かめられる部分だけを、アプリのソースの一部と一緒に組んで走らせる (`macos/Tests/main.swift`)。`macos/test.sh` は Xcode の `swiftc` で、nix の check は nixpkgs の Swift でアプリを組んだうえで走らせる。
+
+- 打鍵を rinzed のキーの名前にする対応づけ (印字できる ASCII、Space・Enter・BackSpace、`C-g` `C-j` `C-q`、Cmd や Option の付いたキーを送らないこと)
+- 左文脈を取る範囲
+- 入力ソースの識別子と入力モードの対応、`Info.plist` の入力モードの定義とアイコンがそれと揃っていること
+
+InputMethodKit を通した打鍵、未確定文字列、パネル、メニューバーの表示は自動では確かめていない。アプリを入れて手で打って確かめる。
