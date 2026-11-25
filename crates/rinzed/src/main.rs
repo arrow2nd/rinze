@@ -15,6 +15,7 @@ use rinzed::user_dict::UserDictionary;
 use rinzed::{Backend, Learning, log};
 
 const USAGE: &str = "使い方: rinzed [--model <zenz の gguf>] [--dict <SKK 辞書>]... [--socket <パス>] [--user-dict <パス>] [--history <パス> | --no-learning] [--threads <数>] [--verbose]
+        rinzed --version
   --model を省くと環境変数 RINZED_DEFAULT_MODEL のモデルを、--dict を 1 つも渡さないと RINZED_DEFAULT_DICTS (: 区切り) の辞書を使う";
 
 const DEFAULT_MODEL_ENV: &str = "RINZED_DEFAULT_MODEL";
@@ -30,6 +31,12 @@ const DEFAULT_THREADS_WHEN_UNKNOWN: usize = 4;
 const DEFAULT_THREADS_CAP: usize = 8;
 const MAX_CONNECTIONS: usize = 64;
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
+
+#[derive(Debug, PartialEq)]
+enum Action {
+    Run(Args),
+    Version,
+}
 
 #[derive(Debug, PartialEq)]
 struct Args {
@@ -51,7 +58,7 @@ enum LearningArg {
 fn parse_args(
     args: impl IntoIterator<Item = String>,
     env: impl Fn(&str) -> Option<OsString>,
-) -> Result<Args, String> {
+) -> Result<Action, String> {
     let env = |name: &str| env(name).filter(|value| !value.is_empty());
     let mut model = None;
     let mut dicts = Vec::new();
@@ -63,6 +70,9 @@ fn parse_args(
     let mut verbose = false;
     let mut it = args.into_iter();
     while let Some(flag) = it.next() {
+        if flag == "--version" || flag == "-V" {
+            return Ok(Action::Version);
+        }
         if flag == "--no-learning" {
             no_learning = true;
             continue;
@@ -96,7 +106,7 @@ fn parse_args(
     if dicts.is_empty() {
         return Err(format!("--dict が必要 ({DEFAULT_DICTS_ENV} も無い)"));
     }
-    Ok(Args {
+    Ok(Action::Run(Args {
         model: model
             .or_else(|| env(DEFAULT_MODEL_ENV).map(PathBuf::from))
             .ok_or_else(|| format!("--model が必要 ({DEFAULT_MODEL_ENV} も無い)"))?,
@@ -110,7 +120,7 @@ fn parse_args(
         },
         threads: threads.unwrap_or_else(default_threads),
         verbose,
-    })
+    }))
 }
 
 fn default_threads() -> i32 {
@@ -243,15 +253,19 @@ fn wait_passively_in_openmp() {
 }
 
 fn main() -> ExitCode {
-    #[cfg(target_os = "linux")]
-    wait_passively_in_openmp();
     let args = match parse_args(std::env::args().skip(1), |name| std::env::var_os(name)) {
-        Ok(a) => a,
+        Ok(Action::Version) => {
+            println!("rinzed {}", env!("CARGO_PKG_VERSION"));
+            return ExitCode::SUCCESS;
+        }
+        Ok(Action::Run(a)) => a,
         Err(e) => {
             eprintln!("{e}\n{USAGE}");
             return ExitCode::from(2);
         }
     };
+    #[cfg(target_os = "linux")]
+    wait_passively_in_openmp();
     match start(args) {
         Ok(AnotherRinzedServes) => ExitCode::SUCCESS,
         Err(e) => {
@@ -410,7 +424,7 @@ mod tests {
     use std::ffi::OsString;
     use std::path::PathBuf;
 
-    use super::{Args, DEFAULT_THREADS_CAP, LearningArg, default_threads, parse_args};
+    use super::{Action, Args, DEFAULT_THREADS_CAP, LearningArg, default_threads, parse_args};
 
     #[test]
     fn 既定のスレッドの数は論理_cpu_の数と上限を超えない() {
@@ -428,11 +442,14 @@ mod tests {
 
     fn parse(args: &[&str], env: &[(&str, &str)]) -> Result<Args, String> {
         let fixed = ["--socket", "/s", "--user-dict", "/u", "--no-learning"];
-        parse_args(args.iter().chain(&fixed).map(|a| a.to_string()), |name| {
+        match parse_args(args.iter().chain(&fixed).map(|a| a.to_string()), |name| {
             env.iter()
                 .find(|(k, _)| *k == name)
                 .map(|(_, v)| OsString::from(v))
-        })
+        })? {
+            Action::Run(a) => Ok(a),
+            Action::Version => Err("unexpected Version".into()),
+        }
     }
 
     #[test]
@@ -498,5 +515,17 @@ mod tests {
     #[test]
     fn 空の_home_は未設定として扱う() {
         assert!(super::home(Some(OsString::from(""))).is_err());
+    }
+
+    #[test]
+    fn version_フラグはモデルや辞書無しで通る() {
+        assert_eq!(
+            parse_args(["--version".to_string()], |_| None),
+            Ok(Action::Version)
+        );
+        assert_eq!(
+            parse_args(["-V".to_string()], |_| None),
+            Ok(Action::Version)
+        );
     }
 }

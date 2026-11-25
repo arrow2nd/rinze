@@ -62,6 +62,18 @@ home-manager のモジュールで rinzed をサービスにすると、ログ�
 - `services.rinzed.package` を `home.packages` にも入れるので、`home.packages` に rinzed を書く必要は無い。サービスが止まっているときにフロントエンドが PATH から起動する rinzed も同じ版になる。
 - フロントエンドの設定は変えなくてよい。サービスの rinzed が待ち受けていれば、フロントエンドはそれに繋ぐだけで起動しない。
 - Linux ではユーザー辞書と学習の履歴の場所を home-manager の `xdg.dataHome` と `xdg.stateHome` から引数で渡す。サービスの環境には利用者のシェルの `XDG_DATA_HOME` と `XDG_STATE_HOME` が入らないため。
-- rinzed は変換のたびに読みと候補を標準エラー出力へ書くので、Linux では journal に残さず捨てる。起動に失敗したときの理由は、`rinzed` を端末から起動して確かめる。
+- rinzed の標準エラー出力は Linux では journal に残さず捨て、macOS でも `/dev/null` に捨てる。起動に失敗したときの理由は、`rinzed` を端末から起動して確かめる (`--verbose` を渡すと変換ごとのログも出る)。
 - macOS では `services.rinzed.macos.enable` で入力メソッドも入れる ([macOS で入れる](macos.md))。
 - ログインした時点から rinzed が常駐し、メモリを持ち続ける ([常駐メモリ](../architecture/performance.md#常駐メモリ))。
+
+## 版を固定する
+
+`Cargo.toml` の `[workspace.package].version` を正本とし、Rust クレート・Nix パッケージ・fcitx5 アドオン・macOS アプリの版を揃える。リリース時は `vX.Y.Z` 形式の Git タグ (最初は `v0.1.0`) を打つ。
+
+各マシンの flake 入力でタグを指定すると、更新のタイミングを手元で選べる。
+
+```nix
+inputs.rinze.url = "github:arrow2nd/rinze/v0.1.0";
+```
+
+手元で動いている rinzed の版は `rinzed --version` で確かめる。

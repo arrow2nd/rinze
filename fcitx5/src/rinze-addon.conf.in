@@ -1,7 +1,7 @@
 [Addon]
 Name=rinze
 Category=InputMethod
-Version=0.1.0
+Version=@PROJECT_VERSION@
 Library=librinze
 Type=SharedLibrary
 OnDemand=True

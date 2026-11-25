@@ -42,7 +42,8 @@ stdenv.mkDerivation {
     mkdir -p "$app/MacOS" "$app/Resources"
     cp rinze "$app/MacOS/rinze"
     cp -R Resources/. "$app/Resources/"
-    sed 's|^</dict>$|\t<key>RinzedPath</key>\n\t<string>${lib.getExe rinzed}</string>\n</dict>|' \
+    sed -e '/<key>CFBundleShortVersionString<\/key>/{n;s|<string>.*</string>|<string>${version}</string>|;}' \
+      -e 's|^</dict>$|\t<key>RinzedPath</key>\n\t<string>${lib.getExe rinzed}</string>\n</dict>|' \
       Info.plist > "$app/Info.plist"
     runHook postInstall
   '';

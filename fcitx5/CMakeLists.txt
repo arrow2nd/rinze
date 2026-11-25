@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
-project(fcitx5-rinze VERSION 0.1.0 LANGUAGES C CXX)
+set(RINZE_VERSION "0.1.0" CACHE STRING "rinze の版")
+project(fcitx5-rinze VERSION ${RINZE_VERSION} LANGUAGES C CXX)
 
 find_package(ECM REQUIRED)
 set(CMAKE_MODULE_PATH ${ECM_MODULE_PATH} ${CMAKE_MODULE_PATH})
@@ -27,7 +28,7 @@ set_target_properties(rinze PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/addon-lib")
 install(TARGETS rinze DESTINATION "${CMAKE_INSTALL_LIBDIR}/fcitx5")
 
-configure_file(src/rinze-addon.conf.in "${CMAKE_BINARY_DIR}/data/addon/rinze.conf" COPYONLY)
+configure_file(src/rinze-addon.conf.in "${CMAKE_BINARY_DIR}/data/addon/rinze.conf" @ONLY)
 configure_file(src/rinze.conf.in "${CMAKE_BINARY_DIR}/data/inputmethod/rinze.conf" COPYONLY)
 install(FILES "${CMAKE_BINARY_DIR}/data/addon/rinze.conf" DESTINATION "${CMAKE_INSTALL_DATADIR}/fcitx5/addon")
 install(FILES "${CMAKE_BINARY_DIR}/data/inputmethod/rinze.conf" DESTINATION "${CMAKE_INSTALL_DATADIR}/fcitx5/inputmethod")

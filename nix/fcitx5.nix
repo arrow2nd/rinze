@@ -26,6 +26,7 @@ stdenv.mkDerivation {
   buildInputs = [ fcitx5 ];
 
   cmakeFlags = [
+    "-DRINZE_VERSION=${version}"
     "-DRINZE_CLIENT_LIB=${rinze-client}/lib/librinze_client.a"
     "-DRINZE_CLIENT_INCLUDE=${rinze-client}/include"
   ];
