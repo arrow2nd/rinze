@@ -640,7 +640,7 @@ void missing(Instance *instance) {
     instance->exit();
 }
 
-// rinzed が起動してすぐ失敗した (モデルが無いなど) ときは、打鍵が無くても標準エラー出力の理由をパネルに出す
+// rinzed が起動してすぐ失敗した (辞書が無いなど) ときは、打鍵が無くても標準エラー出力の理由をパネルに出す
 void failing(Instance *instance, Waiter &waiter) {
     useRinze(instance);
     auto *t = new Typist(instance);
@@ -666,7 +666,7 @@ void failing(Instance *instance, Waiter &waiter) {
         },
         [=](bool shown, double waited) {
             FCITX_ASSERT(shown && t->auxUp().rfind(exited, 0) == 0) << t->auxUp();
-            FCITX_ASSERT(contains(t->auxUp(), "(exit status: 1): rinzed: モデル /missing.gguf を読めない")) << t->auxUp();
+            FCITX_ASSERT(contains(t->auxUp(), "(exit status: 1): rinzed: 辞書 /missing.jisyo を読めない")) << t->auxUp();
             FCITX_INFO() << "入力メソッドの名前を出したあと、知らせが戻るまで含めて: " << waited << " ms: " << t->auxUp();
             t->destroy();
             delete t;

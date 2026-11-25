@@ -26,7 +26,7 @@ fn 試作と同じ順位に並べる() {
     let backend = Backend::new(
         Dictionary::from_bytes(&std::fs::read(dict).unwrap()),
         UserDictionary::in_memory(),
-        Zenz::new(model, 8).unwrap(),
+        Some(Zenz::new(model, 8).unwrap()),
         Learning::Off,
     );
     let cases: Vec<Case> =

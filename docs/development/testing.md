@@ -55,7 +55,7 @@ fcitx5 の testfrontend でアドオンを画面なしで読み込み、打鍵�
 - 打鍵: 変換と確定、送りあり、左文脈による順位、未確定文字列の混ざった surrounding text、候補一覧の選択とページ送り、辞書登録の入力欄、辞書から消すかの問い、5 つの入力モードとトレイのメニュー、ASCII モードで rinzed に送らないこと、直接入力にしたアプリで打鍵をすべてアプリに渡して設定をファイルに残すこと、Ctrl のキー、Escape、矢印、BackSpace、フォーカスが外れたときに捨てて学習に書かないこと、入力欄を閉じると接続を閉じること
 - 自動起動: rinzed が動いていない状態で有効にしたとき、打鍵を待たせずにアプリへ渡し、待ち受けを始めると表示が戻ること
 - 遅い rinzed (止めて 1.5 秒後に再開する): 1 秒を超えても待って変換すること。止めたままの rinzed: 10 秒で未確定文字列を残して諦め、ほかの入力欄はそのあと 1 秒で諦め、再開したあとの打鍵で遅れた応答の確定を失わないこと
-- PATH に rinzed が無い場合、rinzed がモデルを読めずに終了する場合 (打鍵が無くても理由をパネルに出し、fcitx5 が入力メソッドの名前を出したあとも理由が戻ること)、応答しない rinzed (受け付けるだけのソケット) の場合 (最初の 10 秒のあとは打鍵ごとに 1 秒で諦めること)
+- PATH に rinzed が無い場合、rinzed が辞書を読めずに終了する場合 (打鍵が無くても理由をパネルに出し、fcitx5 が入力メソッドの名前を出したあとも理由が戻ること)、応答しない rinzed (受け付けるだけのソケット) の場合 (最初の 10 秒のあとは打鍵ごとに 1 秒で諦めること)
 
 あわせて、共有ライブラリが外に出すシンボルを確かめる (`fcitx5/test/exports.cmake`)。
 手元で cmake でビルドする場合は、`cargo build --release -p rinze-client` のあとで `nix develop .#fcitx5-rinze` に入り、`-DRINZE_CLIENT_LIB=target/release/librinze_client.a -DRINZE_CLIENT_INCLUDE=crates/rinze-client/include` を渡して `fcitx5/` をビルドし、ビルドディレクトリで `RINZED=<rinzed のパス> ctest --output-on-failure` を走らせる。

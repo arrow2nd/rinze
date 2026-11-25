@@ -21,14 +21,13 @@ mod file;
 pub mod history;
 pub mod learning;
 pub mod user_dict;
+mod worker;
 
 use std::io::{BufReader, BufWriter, Write};
 use std::os::unix::net::UnixStream;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::Mutex;
-use std::sync::mpsc::{self, Sender};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use history::History;
 use rinze_dict::Dictionary;
@@ -36,6 +35,7 @@ use rinze_engine::{Converter, Key, Midashi, Mode, Pick, Query, Response, Session
 use rinze_zenz::Zenz;
 use rmpv::Value;
 use user_dict::UserDictionary;
+use worker::Worker;
 
 /// 標準エラー出力へ 1 行書く。書けなくても無視する。
 ///
@@ -52,6 +52,9 @@ macro_rules! log {
 }
 
 const GENERATE_WIDTH: usize = 8;
+/// zenz の点数づけと生成を待つ長さ。過ぎたら辞書と学習の履歴だけで変換を続ける。
+/// 負荷の無いときの最悪 (生成で約 110 ms、点数づけで約 90 ms) の 2 倍ほどにしてある
+const ZENZ_TIMEOUT: Duration = Duration::from_millis(250);
 const MAX_LOG_LIKELIHOOD_BELOW_BEST: f64 = 6.0;
 const KANJI_LIKE_KATAKANA: [char; 2] = ['ヵ', 'ヶ'];
 const MSGPACK_RPC_REQUEST: u64 = 0;
@@ -61,15 +64,14 @@ pub struct Backend {
     pub dict: Dictionary,
     pub user: Mutex<UserDictionary>,
     pub learning: Learning,
-    scorer: Sender<Job>,
+    /// モデルを読めなかったときは None で、辞書と学習の履歴だけで並べる。
+    scorer: Option<Worker<Scorer>>,
 }
 
 struct Scorer {
     zenz: Zenz<'static>,
     last: Option<Scored>,
 }
-
-type Job = Box<dyn FnOnce(&mut Scorer) + Send>;
 
 struct Scored {
     left_context: String,
@@ -160,21 +162,14 @@ impl Backend {
     pub fn new(
         dict: Dictionary,
         user: UserDictionary,
-        zenz: Zenz<'static>,
+        zenz: Option<Zenz<'static>>,
         learning: Learning,
     ) -> Self {
-        let (scorer, jobs) = mpsc::channel::<Job>();
-        std::thread::spawn(move || {
-            let mut state = Scorer { zenz, last: None };
-            for job in jobs {
-                let _ = catch_unwind(AssertUnwindSafe(|| job(&mut state)));
-            }
-        });
         Self {
             dict,
             user: Mutex::new(user),
             learning,
-            scorer,
+            scorer: zenz.map(|zenz| Worker::spawn(Scorer { zenz, last: None })),
         }
     }
 
@@ -182,15 +177,10 @@ impl Backend {
         &self,
         job: impl FnOnce(&mut Scorer) -> rinze_zenz::Result<R> + Send + 'static,
     ) -> rinze_zenz::Result<R> {
-        let (reply, result) = mpsc::sync_channel(1);
-        self.scorer
-            .send(Box::new(move |scorer| {
-                let _ = reply.send(job(scorer));
-            }))
-            .map_err(|_| "zenz のスレッドが無い")?;
-        result
-            .recv()
-            .map_err(|_| "zenz のスレッドが途中で止まった")?
+        let scorer = self.scorer.as_ref().ok_or("zenz のモデルを読めていない")?;
+        scorer
+            .call(ZENZ_TIMEOUT, job)
+            .map_err(|e| format!("zenz: {e}"))?
     }
 
     pub fn user(&self) -> std::sync::MutexGuard<'_, UserDictionary> {
@@ -204,7 +194,8 @@ impl Backend {
         }
     }
 
-    /// 候補が 2 件以上あれば zenz の点数に学習の加点を足して並べ替える。abbrev の候補は辞書の順に、学習の加点だけで並べ替える。
+    /// 候補が 2 件以上あれば zenz の点数に学習の加点を足して並べ替える。
+    /// abbrev の候補と、zenz が点数をつけられなかった (遅れたか動かない) 候補は、辞書の順に学習の加点だけで並べ替える。
     pub fn candidates(&self, query: &Query) -> Vec<String> {
         let words = lookup(&self.dict, &self.user(), query.midashi);
         if words.len() < 2 {
@@ -215,25 +206,28 @@ impl Backend {
             .history()
             .map_or_else(Vec::new, |h| h.choices(&key).to_vec());
         let bonus = |word: &str| learning::bonus(&choices, word, query.left_context);
-        if let Midashi::Abbrev(_) = query.midashi {
-            let unscored = vec![0.0; words.len()];
-            return learning::rank(words, &unscored, bonus);
-        }
-        let started = Instant::now();
-        match self.score(query.left_context, query.midashi, &words) {
-            Ok(scores) => {
-                log!(
-                    "rinzed: {key} {} 件 {:.1}ms",
-                    words.len(),
-                    started.elapsed().as_secs_f64() * 1e3
-                );
-                learning::rank(words, &scores, bonus)
+        let scores = match query.midashi {
+            Midashi::Abbrev(_) => None,
+            Midashi::Kana { .. } => {
+                let started = Instant::now();
+                match self.score(query.left_context, query.midashi, &words) {
+                    Ok(scores) => {
+                        log!(
+                            "rinzed: {key} {} 件 {:.1}ms",
+                            words.len(),
+                            started.elapsed().as_secs_f64() * 1e3
+                        );
+                        Some(scores)
+                    }
+                    Err(e) => {
+                        log!("rinzed: {key} は辞書と学習の履歴の順で返す: {e}");
+                        None
+                    }
+                }
             }
-            Err(e) => {
-                log!("rinzed: {key} の点数づけに失敗したので辞書の順で返す: {e}");
-                words
-            }
-        }
+        };
+        let scores = scores.unwrap_or_else(|| vec![0.0; words.len()]);
+        learning::rank(words, &scores, bonus)
     }
 
     /// 送りがなを含めた表記の、左文脈に対する対数尤度を `words` と同じ順で返す。
@@ -620,6 +614,37 @@ mod tests {
         user.register(&asita, "明日").unwrap();
         assert_eq!(lookup(&dict, &user, &asita), ["明日", "朝"]);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn zenz_が無くても辞書と学習の履歴の順で変換する() {
+        let mut history = History::in_memory();
+        history.record("あした", "朝", 1).unwrap();
+        let backend = Backend::new(
+            Dictionary::parse("あした /明日/朝/晨/\n"),
+            UserDictionary::in_memory(),
+            None,
+            Learning::On(Mutex::new(history)),
+        );
+        let asita = kana("あした", None);
+        let query = |left_context| Query {
+            left_context,
+            midashi: &asita,
+        };
+        assert_eq!(
+            backend.candidates(&query("")),
+            ["朝", "明日", "晨"],
+            "選び直した候補を先に出す"
+        );
+        assert_eq!(
+            backend.candidates(&query("今日の")),
+            ["朝", "明日", "晨"],
+            "左文脈があっても点数が無いので履歴が効く"
+        );
+        assert!(
+            backend.generate(&query("")).is_empty(),
+            "生成できなければ辞書登録に進める"
+        );
     }
 
     #[test]

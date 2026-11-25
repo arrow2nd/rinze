@@ -285,14 +285,29 @@ fn start(args: Args) -> Result<AnotherRinzedServes, Box<dyn std::error::Error>> 
             )
         }
     };
-    let model_error = |e| format!("モデル {} を読めない: {e}", args.model.display());
-    let model: &'static Model = Box::leak(Box::new(Model::load(&args.model).map_err(model_error)?));
-    let zenz = Zenz::new(model, args.threads).map_err(model_error)?;
+    // モデルを読めなくても、辞書と学習の履歴だけで変換できるように起動する
+    let zenz = Model::load(&args.model)
+        .and_then(|model| {
+            let model: &'static Model = Box::leak(Box::new(model));
+            Zenz::new(model, args.threads)
+        })
+        .inspect_err(|e| {
+            log!(
+                "rinzed: モデル {} を読めないので zenz なしで動く: {e}",
+                args.model.display()
+            );
+        })
+        .ok();
+    let model_note = if zenz.is_some() {
+        ""
+    } else {
+        " (読めない)"
+    };
     let backend: &'static Backend = Box::leak(Box::new(Backend::new(dict, user, zenz, learning)));
 
     let dicts: Vec<String> = args.dicts.iter().map(|d| d.display().to_string()).collect();
     let note = format!(
-        "モデル {}、辞書 {}、ユーザー辞書 {}、{learning_note}",
+        "モデル {}{model_note}、辞書 {}、ユーザー辞書 {}、{learning_note}",
         args.model.display(),
         dicts.join(" "),
         args.user_dict.display()

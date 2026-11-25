@@ -66,11 +66,13 @@ fn main() {
         .unwrap(),
         UserDictionary::in_memory(),
         // RINZE_THREADS で点数づけのスレッドの数を変えて比べられる
-        Zenz::new(
-            model,
-            std::env::var("RINZE_THREADS").map_or(8, |s| s.parse().unwrap()),
-        )
-        .unwrap(),
+        Some(
+            Zenz::new(
+                model,
+                std::env::var("RINZE_THREADS").map_or(8, |s| s.parse().unwrap()),
+            )
+            .unwrap(),
+        ),
         Learning::Off,
     );
     println!(

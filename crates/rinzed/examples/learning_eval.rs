@@ -561,7 +561,7 @@ fn backend() -> Backend {
         ))
         .unwrap(),
         UserDictionary::in_memory(),
-        Zenz::new(model, 8).unwrap(),
+        Some(Zenz::new(model, 8).unwrap()),
         Learning::Off,
     )
 }

@@ -48,14 +48,14 @@ echo "--- rinzed が PATH に無い"
 mkdir "$dir/empty-bin"
 PATH=$dir/empty-bin RINZE_SOCKET=$dir/m.sock "$testrinze" missing
 
-echo "--- rinzed がモデルを読めずに終了する"
-cat > "$dir/rinzed-without-model" <<EOF
+echo "--- rinzed が辞書を読めずに終了する"
+cat > "$dir/rinzed-without-dict" <<EOF
 #!/bin/sh
-exec "$rinzed" --model /missing.gguf "\$@"
+exec "$rinzed" --dict /missing.jisyo "\$@"
 EOF
-chmod +x "$dir/rinzed-without-model"
+chmod +x "$dir/rinzed-without-dict"
 mkdir -p "$dir/f-state" "$dir/f-data"
-XDG_STATE_HOME=$dir/f-state XDG_DATA_HOME=$dir/f-data RINZE_SOCKET=$dir/f.sock RINZE_RINZED=$dir/rinzed-without-model \
+XDG_STATE_HOME=$dir/f-state XDG_DATA_HOME=$dir/f-data RINZE_SOCKET=$dir/f.sock RINZE_RINZED=$dir/rinzed-without-dict \
   "$testrinze" failing
 
 echo "--- rinzed が応答しない"
