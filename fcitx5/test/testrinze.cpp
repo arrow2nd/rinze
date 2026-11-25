@@ -522,6 +522,37 @@ void typing(Instance *instance) {
     FCITX_INFO() << "rinzed のソケット: 入力欄 10 個で " << before << " から " << opened
                  << "、閉じて " << closed;
 
+    // 直接入力にしたアプリでは C-j も含めて打鍵をすべてアプリに渡し、アプリの名前をファイルに残す
+    auto directPrograms = env("RINZE_DIRECT_PROGRAMS");
+    auto *direct = instance->userInterfaceManager().lookupAction("rinze-direct");
+    Typist preset(instance, "preset");
+    preset.enableRinze();
+    FCITX_ASSERT(direct->isChecked(preset.ic()) && preset.modeLabel() == "直接")
+        << "fcitx5 を起動する前に書いてあったアプリは直接入力で始まる: " << preset.modeLabel();
+    FCITX_ASSERT(!preset.press("a"));
+    preset.destroy();
+    Typist terminal(instance, "terminal");
+    terminal.enableRinze();
+    FCITX_ASSERT(direct && !direct->isChecked(terminal.ic()));
+    terminal.type("Asi");
+    terminal.expectCommit("あし");
+    direct->activate(terminal.ic());
+    FCITX_ASSERT(direct->isChecked(terminal.ic()) && terminal.modeLabel() == "直接")
+        << terminal.modeLabel();
+    FCITX_ASSERT(terminal.preedit().empty()) << "入力途中のものは確定する: " << terminal.preedit();
+    for (const char *key : {"a", "A", "space", "Return", "Control+j", "Control+g", "Escape"}) {
+        FCITX_ASSERT(!terminal.press(key)) << key << " はアプリへ通す";
+    }
+    FCITX_ASSERT(readFile(directPrograms) == "preset\nterminal\n") << readFile(directPrograms);
+    FCITX_ASSERT(!direct->isChecked(t.ic())) << "ほかのアプリは直接入力にならない";
+    direct->activate(terminal.ic());
+    FCITX_ASSERT(!direct->isChecked(terminal.ic()) && terminal.modeLabel() == "かな")
+        << terminal.modeLabel();
+    FCITX_ASSERT(readFile(directPrograms) == "preset\n") << readFile(directPrograms);
+    terminal.expectCommit("あ");
+    terminal.type("a");
+    terminal.destroy();
+
     // 応答が遅くても 10 秒までは待って変換する
     auto pid = std::stoi(rinzedPid);
     auto resumeAfter = [pid](int millis) {

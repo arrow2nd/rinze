@@ -64,6 +64,23 @@ expect(modeLabel(RINZE_MODE_HALFWIDTH_KATAKANA), "ｶﾅ", "半角カナ")
 expect(modeLabel(RINZE_MODE_FULLWIDTH_LATIN), "全英", "全角英字")
 expect(modeLabel(RINZE_MODE_ASCII), "aA", "ASCII")
 
+// 直接入力にするアプリは入れ替えるたびに defaults に残り、ほかのアプリには効かない
+let suite = "io.github.arrow2nd.inputmethod.rinze.test"
+let testDefaults = UserDefaults(suiteName: suite)!
+testDefaults.removePersistentDomain(forName: suite)
+let direct = DirectApps(defaults: testDefaults)
+expect(direct.contains("com.mitchellh.ghostty"), false, "初めは直接入力でない")
+expect(direct.toggle("com.mitchellh.ghostty"), true, "入れると直接入力")
+expect(direct.toggle("com.apple.Terminal"), true, "2 つ目のアプリ")
+expect(
+    DirectApps(defaults: UserDefaults(suiteName: suite)!).contains("com.mitchellh.ghostty"), true,
+    "defaults から読み直しても残る")
+expect(direct.contains("com.apple.Safari"), false, "ほかのアプリは直接入力でない")
+expect(direct.contains(nil), false, "バンドル ID の分からない入力欄は直接入力でない")
+expect(direct.toggle("com.mitchellh.ghostty"), false, "もう一度選ぶと外れる")
+expect(direct.contains("com.apple.Terminal"), true, "外したアプリのほかは残る")
+testDefaults.removePersistentDomain(forName: suite)
+
 // Info.plist の指すアイコンがある
 let plist = NSDictionary(contentsOfFile: CommandLine.arguments[1])!
 let icon = plist["tsInputMethodIconFileKey"] as! String

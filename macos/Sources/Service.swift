@@ -6,6 +6,7 @@ final class Service {
 
     let handle: OpaquePointer
     let debug: Bool
+    let directApps = DirectApps(defaults: .standard)
 
     private init() {
         let defaults = UserDefaults.standard

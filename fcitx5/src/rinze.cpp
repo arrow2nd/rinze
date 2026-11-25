@@ -1,14 +1,19 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <fcitx-utils/event.h>
 #include <fcitx-utils/key.h>
 #include <fcitx-utils/log.h>
+#include <fcitx-utils/standardpaths.h>
 #include <fcitx-utils/trackableobject.h>
 #include <fcitx/action.h>
 #include <fcitx/addonfactory.h>
@@ -46,6 +51,8 @@ using fcitx::TextFormatFlag;
 using fcitx::UserInterfaceComponent;
 
 constexpr uint64_t STARTUP_POLL_USEC = 100'000;
+// 直接入力にするアプリの名前 (fcitx5 が知らせるもの) を 1 行に 1 つ書く。fcitx5 の設定のディレクトリ (~/.config/fcitx5) の中
+constexpr const char *DIRECT_PROGRAMS = "rinze/direct-programs";
 
 struct ServiceFree {
     void operator()(RinzeService *p) const { rinze_service_free(p); }
@@ -270,14 +277,29 @@ private:
     RinzeMode mode_;
 };
 
+class RinzeDirectChoice final : public fcitx::SimpleAction {
+public:
+    explicit RinzeDirectChoice(RinzeEngine &engine) : engine_(engine) {
+        setShortText("このアプリで直接入力");
+        setCheckable(true);
+    }
+    bool isChecked(InputContext *ic) const override;
+    void activate(InputContext *ic) override;
+
+private:
+    RinzeEngine &engine_;
+};
+
 class RinzeEngine final : public fcitx::InputMethodEngineV2 {
 public:
     explicit RinzeEngine(fcitx::Instance *instance)
         : instance_(instance),
           debug_(std::getenv("RINZE_FCITX_DEBUG") != nullptr),
           service_(newService()),
+          directProgramsPath_(directProgramsPath()),
+          directPrograms_(loadDirectPrograms(directProgramsPath_)),
           factory_([this](InputContext &ic) { return new RinzeState(*this, ic); }),
-          modeAction_(*this) {
+          modeAction_(*this), directChoice_(*this) {
         auto &ui = instance_->userInterfaceManager();
         ui.registerAction("rinze-mode", &modeAction_);
         modeAction_.setMenu(&modeMenu_);
@@ -286,6 +308,8 @@ public:
             ui.registerAction(info.action, choices_.back().get());
             modeMenu_.addAction(choices_.back().get());
         }
+        ui.registerAction("rinze-direct", &directChoice_);
+        modeMenu_.addAction(&directChoice_);
         instance_->inputContextManager().registerProperty("rinzeState", &factory_);
         // fcitx5 5.1.19 は入力メソッドの名前をパネルの上段に出して知らせを上書きし、1 秒後にパネルを空にする。
         // rinzed が起動に失敗した知らせなどが次の打鍵まで見えなくならないよう、パネルが空になったら出し直す
@@ -304,6 +328,33 @@ public:
     RinzeState *state(InputContext *ic) { return ic->propertyFor(&factory_); }
     RinzeService *service() { return service_.get(); }
     bool debug() const { return debug_; }
+
+    // 直接入力にしたアプリでは、打鍵をすべてアプリに渡し、rinzed に送らない
+    bool direct(const InputContext &ic) const { return directPrograms_.contains(ic.program()); }
+
+    // アプリの名前が分からない入力欄では、ほかのアプリと見分けられないので切り替えない
+    void toggleDirect(InputContext &ic) {
+        const auto &program = ic.program();
+        if (program.empty()) {
+            return;
+        }
+        if (directPrograms_.erase(program) == 0) {
+            state(&ic)->flush();
+            directPrograms_.insert(program);
+        }
+        saveDirectPrograms();
+        modeChanged(ic, true);
+    }
+
+    // サブモードのラベルと説明。rinzed の応答がまだ無ければ空
+    std::pair<std::string, std::string> modeText(InputContext &ic) {
+        if (direct(ic)) {
+            return {"直接", "直接入力"};
+        }
+        const auto *info = modeInfo(state(&ic)->mode());
+        return info ? std::pair{std::string(info->label), std::string(info->description)}
+                    : std::pair<std::string, std::string>{};
+    }
 
     void activate(const fcitx::InputMethodEntry &,
                   fcitx::InputContextEvent &event) override {
@@ -342,7 +393,8 @@ public:
         }
         // 打鍵を rinzed に送ると読みと語が学習の履歴に残るので、残してはいけない入力欄では送らない
         const auto caps = event.inputContext()->capabilityFlags();
-        if (caps.test(CapabilityFlag::Password) || caps.test(CapabilityFlag::Sensitive)) {
+        if (caps.test(CapabilityFlag::Password) || caps.test(CapabilityFlag::Sensitive) ||
+            direct(*event.inputContext())) {
             return;
         }
         auto *s = state(event.inputContext());
@@ -375,14 +427,12 @@ public:
 
     std::string subMode(const fcitx::InputMethodEntry &,
                         InputContext &ic) override {
-        const auto *info = modeInfo(state(&ic)->mode());
-        return info ? info->description : "";
+        return modeText(ic).second;
     }
 
     std::string subModeLabelImpl(const fcitx::InputMethodEntry &,
                                  InputContext &ic) override {
-        const auto *info = modeInfo(state(&ic)->mode());
-        return info ? info->label : "";
+        return modeText(ic).first;
     }
 
     void modeChanged(InputContext &ic, bool announce) {
@@ -432,11 +482,67 @@ private:
         return service;
     }
 
+    // 設定のディレクトリが決まらなければ空で、読みも書きもしない
+    static std::filesystem::path directProgramsPath() {
+        if (const char *path = std::getenv("RINZE_DIRECT_PROGRAMS"); path && *path) {
+            return path;
+        }
+        const auto &config =
+            fcitx::StandardPaths::global().userDirectory(fcitx::StandardPathsType::PkgConfig);
+        return config.empty() ? config : config / DIRECT_PROGRAMS;
+    }
+
+    static std::set<std::string> loadDirectPrograms(const std::filesystem::path &path) {
+        std::set<std::string> programs;
+        if (path.empty()) {
+            return programs;
+        }
+        std::ifstream in(path);
+        for (std::string line; std::getline(in, line);) {
+            if (!line.empty()) {
+                programs.insert(line);
+            }
+        }
+        return programs;
+    }
+
+    // 書いている途中で fcitx5 が落ちても前の内容が残るよう、別のファイルに書いてから置き換える
+    void saveDirectPrograms() const {
+        if (directProgramsPath_.empty()) {
+            RINZE_WARN() << "設定のディレクトリが決まらないので、直接入力にするアプリを覚えられない";
+            return;
+        }
+        auto temporary = directProgramsPath_;
+        temporary += ".tmp";
+        std::error_code error;
+        std::filesystem::create_directories(directProgramsPath_.parent_path(), error);
+        {
+            std::ofstream out(temporary, std::ios::trunc);
+            for (const auto &program : directPrograms_) {
+                out << program << '\n';
+            }
+            out.close();
+            if (!out) {
+                error = std::make_error_code(std::errc::io_error);
+            }
+        }
+        if (!error) {
+            std::filesystem::rename(temporary, directProgramsPath_, error);
+        }
+        if (error) {
+            RINZE_WARN() << "直接入力にするアプリを " << directProgramsPath_
+                         << " に書けない: " << error.message();
+        }
+    }
+
     fcitx::Instance *instance_;
     bool debug_;
     ServicePtr service_;
+    std::filesystem::path directProgramsPath_;
+    std::set<std::string> directPrograms_;
     fcitx::FactoryFor<RinzeState> factory_;
     RinzeModeAction modeAction_;
+    RinzeDirectChoice directChoice_;
     fcitx::Menu modeMenu_;
     std::vector<std::unique_ptr<RinzeModeChoice>> choices_;
     std::unique_ptr<fcitx::EventSourceTime> startupTimer_;
@@ -445,14 +551,17 @@ private:
 };
 
 std::string RinzeModeAction::shortText(InputContext *ic) const {
-    const auto *info = modeInfo(engine_.state(ic)->mode());
-    return info ? std::string(info->label) + " - " + info->description : "rinze";
+    auto [label, description] = engine_.modeText(*ic);
+    return label.empty() ? "rinze" : label + " - " + description;
 }
 
 std::string RinzeModeAction::longText(InputContext *ic) const {
-    const auto *info = modeInfo(engine_.state(ic)->mode());
-    return info ? info->description : "";
+    return engine_.modeText(*ic).second;
 }
+
+bool RinzeDirectChoice::isChecked(InputContext *ic) const { return engine_.direct(*ic); }
+
+void RinzeDirectChoice::activate(InputContext *ic) { engine_.toggleDirect(*ic); }
 
 bool RinzeModeChoice::isChecked(InputContext *ic) const {
     return engine_.state(ic)->mode() == mode_;

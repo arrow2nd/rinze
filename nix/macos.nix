@@ -30,7 +30,7 @@ stdenv.mkDerivation {
   checkPhase = ''
     runHook preCheck
     swiftc -swift-version 5 -target ${target} -import-objc-header ${header} \
-      -o test Sources/Keys.swift Sources/Modes.swift Tests/main.swift
+      -o test Sources/Keys.swift Sources/Modes.swift Sources/DirectApps.swift Tests/main.swift
     ./test Info.plist Resources
     runHook postCheck
   '';

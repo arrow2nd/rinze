@@ -34,8 +34,9 @@ RINZE_SOCKET=$dir/u.sock RINZE_RINZED=$dir/not-launched "$testrinze" unresponsiv
 unresponsive=$!
 
 echo "--- 打鍵"
+echo preset > "$dir/t-direct-programs"
 RINZE_SOCKET=$dir/t.sock RINZE_RINZED=$dir/not-launched RINZE_FCITX_DEBUG=1 \
-  RINZE_TEST_HISTORY=$dir/t-history.tsv RINZE_TEST_RINZED_PID=$typing_rinzed \
+  RINZE_TEST_HISTORY=$dir/t-history.tsv RINZE_TEST_RINZED_PID=$typing_rinzed RINZE_DIRECT_PROGRAMS=$dir/t-direct-programs \
   "$testrinze" typing
 
 echo "--- 自動起動"

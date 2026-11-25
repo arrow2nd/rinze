@@ -38,7 +38,7 @@ final class RinzeInputController: IMKInputController {
     }
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
-        guard let event, event.type == .keyDown else {
+        guard let event, event.type == .keyDown, !Service.shared.directApps.contains(app) else {
             return false
         }
         var name = keyName(event)
@@ -85,6 +85,32 @@ final class RinzeInputController: IMKInputController {
     override func commitComposition(_ sender: Any!) {
         flush()
     }
+
+    /// メニューバーの入力メニューに足す項目。
+    override func menu() -> NSMenu! {
+        let menu = NSMenu()
+        let item = NSMenuItem(
+            title: "このアプリで直接入力", action: #selector(toggleDirect(_:)), keyEquivalent: "")
+        item.state = Service.shared.directApps.contains(app) ? .on : .off
+        menu.addItem(item)
+        return menu
+    }
+
+    // 直接入力にしたアプリでは、打鍵をすべてアプリに渡し、rinzed に送らない
+    @objc func toggleDirect(_ sender: Any!) {
+        guard let app else {
+            return
+        }
+        if Service.shared.directApps.toggle(app) {
+            flush()
+            flash("直接入力")
+        } else {
+            flash(mode.map(modeLabel) ?? "")
+        }
+        render()
+    }
+
+    private var app: String? { client()?.bundleIdentifier() }
 
     private func press(_ key: String) -> Bool {
         let surrounding = Service.shared.debug || !passthrough ? leftSurrounding() : nil
@@ -165,7 +191,7 @@ final class RinzeInputController: IMKInputController {
         shown = response
         notice = ""
         if let before, let after = mode, before != after {
-            flashMode(after)
+            flash(modeLabel(after))
         }
         render()
         return handled
@@ -237,8 +263,8 @@ final class RinzeInputController: IMKInputController {
         return rect == .zero ? nil : rect
     }
 
-    private func flashMode(_ mode: RinzeMode) {
-        modeFlash = modeLabel(mode)
+    private func flash(_ label: String) {
+        modeFlash = label
         modeTimer?.invalidate()
         modeTimer = Timer.scheduledTimer(withTimeInterval: modeFlashInterval, repeats: false) {
             [weak self] _ in
