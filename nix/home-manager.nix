@@ -66,6 +66,8 @@ in
         # ソケットを別の rinzed が使っていれば 0 で終了する。そのときは起動し直さない
         KeepAlive.SuccessfulExit = false;
         ProcessType = "Interactive";
+        # 標準エラー出力をログに残さない
+        StandardErrorPath = "/dev/null";
       };
     };
 

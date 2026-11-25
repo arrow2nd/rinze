@@ -1,12 +1,16 @@
+#include <atomic>
+#include <cerrno>
 #include <cstdlib>
-#include <stdexcept>
 #include <ctime>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
+#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -332,11 +336,16 @@ public:
     // 直接入力にしたアプリでは、打鍵をすべてアプリに渡し、rinzed に送らない
     bool direct(const InputContext &ic) const { return directPrograms_.contains(ic.program()); }
 
-    // アプリの名前が分からない入力欄では、ほかのアプリと見分けられないので切り替えない
+    // アプリの名前が分からない入力欄や制御文字を含む名前は、ファイル破損を防ぐため切り替えない
     void toggleDirect(InputContext &ic) {
         const auto &program = ic.program();
         if (program.empty()) {
             return;
+        }
+        for (unsigned char c : program) {
+            if (c < 0x20 || c == 0x7f) {
+                return;
+            }
         }
         if (directPrograms_.erase(program) == 0) {
             state(&ic)->flush();
@@ -512,24 +521,63 @@ private:
             RINZE_WARN() << "設定のディレクトリが決まらないので、直接入力にするアプリを覚えられない";
             return;
         }
-        auto temporary = directProgramsPath_;
-        temporary += ".tmp";
         std::error_code error;
         std::filesystem::create_directories(directProgramsPath_.parent_path(), error);
-        {
-            std::ofstream out(temporary, std::ios::trunc);
-            for (const auto &program : directPrograms_) {
-                out << program << '\n';
+        if (error) {
+            RINZE_WARN() << "直接入力にするアプリを " << directProgramsPath_
+                         << " に書けない: " << error.message();
+            return;
+        }
+        static std::atomic<uint64_t> tempSeq{0};
+        std::filesystem::path temporary;
+        int fd = -1;
+        for (int attempt = 0; attempt < 64; ++attempt) {
+            temporary = directProgramsPath_;
+            temporary += ".tmp." + std::to_string(getpid()) + "." +
+                         std::to_string(tempSeq.fetch_add(1, std::memory_order_relaxed));
+            fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+            if (fd >= 0) {
+                break;
             }
-            out.close();
-            if (!out) {
-                error = std::make_error_code(std::errc::io_error);
+            if (errno != EEXIST) {
+                error = std::error_code(errno, std::generic_category());
+                break;
             }
+        }
+        if (fd < 0) {
+            if (!error) {
+                error = std::make_error_code(std::errc::file_exists);
+            }
+            RINZE_WARN() << "直接入力にするアプリを " << directProgramsPath_
+                         << " に書けない: " << error.message();
+            return;
+        }
+        std::string content;
+        for (const auto &program : directPrograms_) {
+            content += program;
+            content += '\n';
+        }
+        size_t written = 0;
+        while (written < content.size()) {
+            ssize_t n = ::write(fd, content.data() + written, content.size() - written);
+            if (n < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                error = std::error_code(errno, std::generic_category());
+                break;
+            }
+            written += static_cast<size_t>(n);
+        }
+        if (::close(fd) < 0 && !error) {
+            error = std::error_code(errno, std::generic_category());
         }
         if (!error) {
             std::filesystem::rename(temporary, directProgramsPath_, error);
         }
         if (error) {
+            std::error_code ignored;
+            std::filesystem::remove(temporary, ignored);
             RINZE_WARN() << "直接入力にするアプリを " << directProgramsPath_
                          << " に書けない: " << error.message();
         }

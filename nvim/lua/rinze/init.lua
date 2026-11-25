@@ -382,12 +382,59 @@ function insert.left_context()
   return before
 end
 
+local function in_range(b, lo, hi)
+  return b ~= nil and b >= lo and b <= hi
+end
+
+local function utf8_3_len(b1, b2, b3)
+  local lo = b1 == 0xe0 and 0xa0 or 0x80
+  local hi = b1 == 0xed and 0x9f or 0xbf
+  return in_range(b2, lo, hi) and in_range(b3, 0x80, 0xbf) and 3 or 0
+end
+
+local function utf8_4_len(b1, b2, b3, b4)
+  local lo = b1 == 0xf0 and 0x90 or 0x80
+  local hi = b1 == 0xf4 and 0x8f or 0xbf
+  return in_range(b2, lo, hi) and in_range(b3, 0x80, 0xbf) and in_range(b4, 0x80, 0xbf) and 4 or 0
+end
+
+local function utf8_len(text, i)
+  local b1, b2, b3, b4 = text:byte(i, i + 3)
+  if in_range(b1, 0x01, 0x7f) then
+    return 1
+  elseif in_range(b1, 0xc2, 0xdf) then
+    return in_range(b2, 0x80, 0xbf) and 2 or 0
+  elseif in_range(b1, 0xe0, 0xef) then
+    return utf8_3_len(b1, b2, b3)
+  elseif in_range(b1, 0xf0, 0xf4) then
+    return utf8_4_len(b1, b2, b3, b4)
+  end
+  return 0
+end
+
+-- 不正な UTF-8 バイト列 (生の 0x80 K_SPECIAL など) と NUL バイトを除く
+local function sanitize_utf8(text)
+  local out = {}
+  local i = 1
+  while i <= #text do
+    local len = utf8_len(text, i)
+    if len > 0 then
+      out[#out + 1] = text:sub(i, i + len - 1)
+      i = i + len
+    else
+      i = i + 1
+    end
+  end
+  return table.concat(out)
+end
+
 -- 確定文字列は打鍵として先読みに入れる。API で書き込むと `.` で繰り返せず、undo も打鍵と別の単位になる。
 -- 'i' で先読み中のキーより前に差し込むので、後に入れるものから先に送る
 function insert.insert(_, commit)
-  if commit ~= '' then
+  local safe = sanitize_utf8(commit)
+  if safe ~= '' then
     -- 制御文字は CTRL-V を前に置き、打鍵として働かせず文字として入れる
-    local literal = commit:gsub('%c', function(c)
+    local literal = safe:gsub('%c', function(c)
       return '\22' .. c
     end)
     vim.api.nvim_feedkeys(literal, 'ni', true)
@@ -409,10 +456,15 @@ end
 function insert.insert_flushed(session, commit)
   local buf, row, col = preedit_position(session)
   if commit ~= '' and buf then
-    vim.api.nvim_buf_set_text(buf, row, col, row, col, { commit })
+    local lines = vim.split(commit:gsub('\r\n', '\n'), '\n', { plain = true })
+    vim.api.nvim_buf_set_text(buf, row, col, row, col, lines)
     local cursor = vim.api.nvim_win_get_cursor(0)
     if buf == vim.api.nvim_get_current_buf() and cursor[1] == row + 1 and cursor[2] >= col then
-      vim.api.nvim_win_set_cursor(0, { cursor[1], cursor[2] + #commit })
+      if #lines == 1 then
+        vim.api.nvim_win_set_cursor(0, { cursor[1], cursor[2] + #lines[1] })
+      else
+        vim.api.nvim_win_set_cursor(0, { cursor[1] + #lines - 1, #lines[#lines] + (cursor[2] - col) })
+      end
     end
   end
 end

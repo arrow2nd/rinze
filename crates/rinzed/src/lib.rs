@@ -27,6 +27,7 @@ use std::io::{BufReader, BufWriter, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use history::History;
@@ -36,6 +37,16 @@ use rinze_zenz::Zenz;
 use rmpv::Value;
 use user_dict::UserDictionary;
 use worker::Worker;
+
+static VERBOSE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_verbose(verbose: bool) {
+    VERBOSE.store(verbose, Ordering::Relaxed);
+}
+
+pub fn is_verbose() -> bool {
+    VERBOSE.load(Ordering::Relaxed)
+}
 
 /// 標準エラー出力へ 1 行書く。書けなくても無視する。
 ///
@@ -48,6 +59,14 @@ macro_rules! log {
             &mut std::io::stderr(),
             format_args!("{}\n", format_args!($($arg)*)),
         );
+    }};
+}
+
+macro_rules! verbose_log {
+    ($($arg:tt)*) => {{
+        if $crate::is_verbose() {
+            $crate::log!($($arg)*);
+        }
     }};
 }
 
@@ -212,7 +231,7 @@ impl Backend {
                 let started = Instant::now();
                 match self.score(query.left_context, query.midashi, &words) {
                     Ok(scores) => {
-                        log!(
+                        verbose_log!(
                             "rinzed: {key} {} 件 {:.1}ms",
                             words.len(),
                             started.elapsed().as_secs_f64() * 1e3
@@ -220,7 +239,7 @@ impl Backend {
                         Some(scores)
                     }
                     Err(e) => {
-                        log!("rinzed: {key} は辞書と学習の履歴の順で返す: {e}");
+                        verbose_log!("rinzed: {key} は辞書と学習の履歴の順で返す: {e}");
                         None
                     }
                 }
@@ -280,7 +299,7 @@ impl Backend {
         {
             Ok(g) => g,
             Err(e) => {
-                log!("rinzed: {reading} の生成に失敗した: {e}");
+                verbose_log!("rinzed: {reading} の生成に失敗した: {e}");
                 return Vec::new();
             }
         };
@@ -307,7 +326,7 @@ impl Backend {
             }
             words.push(stem.to_string());
         }
-        log!(
+        verbose_log!(
             "rinzed: {reading} を生成 {:.1}ms {:?} から {:?}",
             started.elapsed().as_secs_f64() * 1e3,
             generated.iter().map(|g| &g.text).collect::<Vec<_>>(),
@@ -319,23 +338,23 @@ impl Backend {
     pub fn register(&self, midashi: &Midashi, word: &str) {
         let key = midashi.key();
         match self.user().register(midashi, word) {
-            Ok(()) => log!("rinzed: {key} /{word}/ を登録した"),
-            Err(e) => log!("rinzed: {key} /{word}/ を登録できなかった: {e}"),
+            Ok(()) => verbose_log!("rinzed: {key} /{word}/ を登録した"),
+            Err(e) => verbose_log!("rinzed: {key} /{word}/ を登録できなかった: {e}"),
         }
     }
 
     pub fn purge(&self, midashi: &Midashi, word: &str) {
         let key = midashi.key();
         match self.user().purge(midashi, word, &self.dict) {
-            Ok(true) => log!("rinzed: {key} /{word}/ を辞書から消した"),
-            Ok(false) => log!("rinzed: {key} /{word}/ は消してある"),
-            Err(e) => log!("rinzed: {key} /{word}/ を消せなかった: {e}"),
+            Ok(true) => verbose_log!("rinzed: {key} /{word}/ を辞書から消した"),
+            Ok(false) => verbose_log!("rinzed: {key} /{word}/ は消してある"),
+            Err(e) => verbose_log!("rinzed: {key} /{word}/ を消せなかった: {e}"),
         }
         if let Some(mut history) = self.history() {
             match history.forget(&key, word) {
-                Ok(true) => log!("rinzed: {key} /{word}/ を学習の履歴から消した"),
+                Ok(true) => verbose_log!("rinzed: {key} /{word}/ を学習の履歴から消した"),
                 Ok(false) => {}
-                Err(e) => log!("rinzed: {key} /{word}/ を学習の履歴から消せなかった: {e}"),
+                Err(e) => verbose_log!("rinzed: {key} /{word}/ を学習の履歴から消せなかった: {e}"),
             }
         }
     }
@@ -354,11 +373,11 @@ impl Backend {
         let key = midashi.key();
         let started = Instant::now();
         match history.record(&key, word, now_millis()) {
-            Ok(()) => log!(
+            Ok(()) => verbose_log!(
                 "rinzed: {key} /{word}/ を学習の履歴に書いた {:.1}ms",
                 started.elapsed().as_secs_f64() * 1e3
             ),
-            Err(e) => log!("rinzed: {key} /{word}/ を学習の履歴に書けなかった: {e}"),
+            Err(e) => verbose_log!("rinzed: {key} /{word}/ を学習の履歴に書けなかった: {e}"),
         }
     }
 }

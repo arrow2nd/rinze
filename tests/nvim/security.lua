@@ -106,6 +106,35 @@ do
   check('制御文字が打鍵でなく文字として入る', line, payload)
 end
 
+-- 1b. 不正な UTF-8 (生の 0x80 K_SPECIAL <Cmd>) や NUL を含む確定文字列でコマンドが実行されない
+do
+  T = { kspecial = false }
+  local payload = 'X\128\253hlua T.kspecial = true --\rY\0Z'
+  local sock = work .. '/kspecial.sock'
+  local stop = start_server(sock, function(conn, msg)
+    local id, method = msg[2], msg[3]
+    if method == 'key' then
+      conn:write(response(id, { commit = payload }))
+    else
+      conn:write(response(id))
+    end
+  end)
+  rinze.setup({ cmd = { '/nonexistent' }, socket = sock, request_timeout = 2000 })
+  vim.cmd('enew!')
+  local mode_after = nil
+  vim.keymap.set('i', '<F12>', function()
+    mode_after = vim.api.nvim_get_mode().mode
+  end, { buffer = 0 })
+  rinze.enable()
+  vim.api.nvim_feedkeys(vim.keycode('ia<F12><Esc>'), 'x', false)
+  local line = vim.api.nvim_buf_get_lines(0, 0, -1, false)[1]
+  rinze.disable()
+  stop()
+  check('不正な UTF-8 K_SPECIAL で挿入モードを抜けない', mode_after, 'i')
+  check('不正な UTF-8 K_SPECIAL で Lua が実行されない', T.kspecial, false)
+  check('不正な UTF-8 と NUL を除いた文字が入る', line, 'Xhlua T.kspecial = true --\rYZ')
+end
+
 -- 2. なりすましプロセスが nvim_exec_lua を送り返しても実行されず接続を拒む
 do
   T = { pwned = false }
@@ -119,6 +148,23 @@ do
   check('応答以外のメッセージを送る相手は拒む', ok, false)
   check('拒否の理由にメッセージ種別が出る', tostring(err):find('応答以外', 1, true) ~= nil, true)
   check('相手からの nvim_exec_lua は実行されない', T.pwned, false)
+end
+
+-- 2b. 通知メッセージ (kind == 2) も拒む
+do
+  local sock = work .. '/notify.sock'
+  local stop = start_server(sock, function(conn)
+    conn:write(vim.mpack.encode({ 2, 'notify', {} }))
+  end)
+  rinze.setup({ cmd = { '/nonexistent' }, socket = sock, request_timeout = 1000 })
+  local ok, err = pcall(rinze.enable)
+  stop()
+  check('通知メッセージを送る相手は拒む', ok, false)
+  check(
+    '通知拒否の理由にメッセージ種別が出る',
+    tostring(err):find('応答以外', 1, true) ~= nil,
+    true
+  )
 end
 
 -- 3. 応答しないプロセスには request_timeout で打ち切る
@@ -164,6 +210,22 @@ do
   local ok, err = pcall(rinze.enable)
   check('通常ファイルをソケットとして信じない', ok, false)
   check('ソケットでない理由が出る', tostring(err):find('ソケットでない', 1, true) ~= nil, true)
+
+  local real_sock = work .. '/real.sock'
+  local link_sock = work .. '/link.sock'
+  local stop = start_server(real_sock, function(conn, msg)
+    conn:write(response(msg[2]))
+  end)
+  assert(vim.uv.fs_symlink(real_sock, link_sock))
+  rinze.setup({ cmd = { '/nonexistent' }, socket = link_sock, request_timeout = 1000 })
+  local link_ok, link_err = pcall(rinze.enable)
+  stop()
+  check('シンボリックリンクをソケットとして信じない', link_ok, false)
+  check(
+    'シンボリックリンク拒否の理由が出る',
+    tostring(link_err):find('ソケットでない', 1, true) ~= nil,
+    true
+  )
 end
 
 vim.fn.delete(work, 'rf')

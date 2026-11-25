@@ -427,7 +427,7 @@ fn ignore_item(args: &[String]) -> String {
     let quoted: Vec<String> = args
         .iter()
         .map(|arg| {
-            if !arg.contains(['/', '\n', '\r', '"', ';']) {
+            if !arg.contains(['/', '\n', '\r', '"', ';', '\\']) {
                 return format!("\"{arg}\"");
             }
             let mut out = String::from("\"");
@@ -696,5 +696,20 @@ mod tests {
     fn euc_jp_の辞書を読める() {
         let (bytes, _, _) = encoding_rs::EUC_JP.encode("あした /明日/\n");
         assert_eq!(words(&Dictionary::from_bytes(&bytes), "あした"), ["明日"]);
+    }
+
+    #[test]
+    fn バックスラッシュを含む語を_skk_ignore_dic_word_で往復できる() {
+        let updated = purge_entry(
+            "",
+            Section::OkuriNasi,
+            "きごう",
+            "foo\\",
+            Purge::Ignore("foo\\"),
+        )
+        .unwrap();
+        assert!(updated.contains("(skk-ignore-dic-word \"foo\\\\\")"));
+        let dict = Dictionary::parse(&updated);
+        assert_eq!(dict.ignored("きごう"), ["foo\\"]);
     }
 }

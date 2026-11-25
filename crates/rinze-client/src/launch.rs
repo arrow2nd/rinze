@@ -129,8 +129,7 @@ impl Launcher {
         let stderr = child.stderr.take().expect("stderr を piped にした");
         let program = program.clone();
         let reported = Arc::clone(&exit);
-        // rinzed は変換のたびに標準エラー出力へ書くので、読み続けないとパイプが詰まって止まる。
-        // 書かれる内容には読みや候補が入るので、失敗の理由に使う末尾の数行だけを持つ
+        // 起動失敗の理由を取るために標準エラー出力を読み続け、末尾の数行だけを持つ
         std::thread::spawn(move || {
             let tail = last_lines(stderr);
             let exit = match child.wait() {

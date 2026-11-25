@@ -1,6 +1,6 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -20,7 +20,16 @@ pub(crate) fn rewrite(
         .truncate(false)
         .write(true)
         .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(with_suffix(path, ".lock"))?;
+    let my_uid = rinze_socket::current_uid();
+    let uid = lock.metadata()?.uid();
+    if uid != my_uid {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("ロックファイルの所有者 (uid {uid}) が自分 (uid {my_uid}) と異なる"),
+        ));
+    }
     lock.lock()?;
     let latest = read_or_empty(path)?;
     let text = edit(&latest)?;

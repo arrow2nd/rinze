@@ -1,7 +1,7 @@
 use std::convert::Infallible;
 use std::ffi::OsString;
 use std::fs::{DirBuilder, File, OpenOptions, Permissions, TryLockError};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -14,7 +14,7 @@ use rinzed::history::History;
 use rinzed::user_dict::UserDictionary;
 use rinzed::{Backend, Learning, log};
 
-const USAGE: &str = "使い方: rinzed [--model <zenz の gguf>] [--dict <SKK 辞書>]... [--socket <パス>] [--user-dict <パス>] [--history <パス> | --no-learning] [--threads <数>]
+const USAGE: &str = "使い方: rinzed [--model <zenz の gguf>] [--dict <SKK 辞書>]... [--socket <パス>] [--user-dict <パス>] [--history <パス> | --no-learning] [--threads <数>] [--verbose]
   --model を省くと環境変数 RINZED_DEFAULT_MODEL のモデルを、--dict を 1 つも渡さないと RINZED_DEFAULT_DICTS (: 区切り) の辞書を使う";
 
 const DEFAULT_MODEL_ENV: &str = "RINZED_DEFAULT_MODEL";
@@ -39,6 +39,7 @@ struct Args {
     user_dict: PathBuf,
     learning: LearningArg,
     threads: i32,
+    verbose: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -59,10 +60,15 @@ fn parse_args(
     let mut history = None;
     let mut no_learning = false;
     let mut threads = None;
+    let mut verbose = false;
     let mut it = args.into_iter();
     while let Some(flag) = it.next() {
         if flag == "--no-learning" {
             no_learning = true;
+            continue;
+        }
+        if flag == "--verbose" {
+            verbose = true;
             continue;
         }
         let value = it.next().ok_or_else(|| format!("{flag} に値がない"))?;
@@ -103,6 +109,7 @@ fn parse_args(
             (false, history) => LearningArg::History(history.map_or_else(default_history, Ok)?),
         },
         threads: threads.unwrap_or_else(default_threads),
+        verbose,
     })
 }
 
@@ -136,7 +143,8 @@ fn performance_cores() -> Option<usize> {
 }
 
 fn home(home: Option<OsString>) -> Result<PathBuf, String> {
-    home.map(PathBuf::from)
+    home.filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
         .ok_or_else(|| "HOME が無いので既定のパスを決められない".into())
 }
 
@@ -146,7 +154,7 @@ fn default_user_dict() -> Result<PathBuf, String> {
             home(std::env::var_os("HOME"))?.join("Library/Application Support/rinze/user.jisyo")
         );
     }
-    let data = match std::env::var_os("XDG_DATA_HOME") {
+    let data = match std::env::var_os("XDG_DATA_HOME").filter(|dir| !dir.is_empty()) {
         Some(dir) => PathBuf::from(dir),
         None => home(std::env::var_os("HOME"))?.join(".local/share"),
     };
@@ -190,6 +198,7 @@ fn lock_socket(socket: &Path) -> Result<Option<File>, String> {
         .truncate(false)
         .write(true)
         .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(lock_path)
         .map_err(|e| format!("ロックファイル {} を開けない: {e}", lock_path.display()))?;
     let meta = file.metadata().map_err(|e| {
@@ -253,6 +262,7 @@ fn main() -> ExitCode {
 }
 
 fn start(args: Args) -> Result<AnotherRinzedServes, Box<dyn std::error::Error>> {
+    rinzed::set_verbose(args.verbose);
     check_socket_path(&args.socket)?;
     if let Some(dir) = args.socket.parent().filter(|d| !d.as_os_str().is_empty())
         && !dir.exists()
@@ -339,6 +349,9 @@ fn serve_on(
 ) -> Result<Infallible, Box<dyn std::error::Error>> {
     match std::fs::symlink_metadata(socket) {
         Ok(meta) => {
+            if !meta.file_type().is_socket() {
+                return Err(format!("{} はソケットでないため消せない", socket.display()).into());
+            }
             let my_uid = rinze_socket::current_uid();
             if meta.uid() != my_uid {
                 return Err(format!(
@@ -472,5 +485,18 @@ mod tests {
         assert!(super::try_acquire(&active, 2).is_none());
         drop((g2, g3));
         assert_eq!(active.load(std::sync::atomic::Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn verbose_は既定で無効で_引数で有効になる() {
+        let off = parse(&["--model", "/m.gguf", "--dict", "/L"], &[]).unwrap();
+        assert!(!off.verbose);
+        let on = parse(&["--model", "/m.gguf", "--dict", "/L", "--verbose"], &[]).unwrap();
+        assert!(on.verbose);
+    }
+
+    #[test]
+    fn 空の_home_は未設定として扱う() {
+        assert!(super::home(Some(OsString::from(""))).is_err());
     }
 }

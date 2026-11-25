@@ -1,3 +1,4 @@
+import Carbon
 import Cocoa
 import InputMethodKit
 
@@ -38,7 +39,9 @@ final class RinzeInputController: IMKInputController {
     }
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
-        guard let event, event.type == .keyDown, !Service.shared.directApps.contains(app) else {
+        guard let event, event.type == .keyDown, !IsSecureEventInputEnabled(),
+            !Service.shared.directApps.contains(app)
+        else {
             return false
         }
         var name = keyName(event)
@@ -140,7 +143,7 @@ final class RinzeInputController: IMKInputController {
 
     /// カーソルより前の文字列。未確定文字列があれば、その前まで。
     private func leftSurrounding() -> (text: String, cursor: Int)? {
-        guard let client = client() else {
+        guard !IsSecureEventInputEnabled(), let client = client() else {
             return nil
         }
         let markedRange = client.markedRange()
