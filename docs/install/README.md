@@ -1,10 +1,10 @@
-# 入れ方
+# 導入方法
 
-flake から `rinzed`、zenz のモデル、SKK 辞書、Neovim プラグイン、fcitx5 のアドオン、macOS の入力メソッドを入れる。flake の `rinzed` はモデルと辞書の既定値を持つので、PATH に入れればフロントエンドは引数なしで起動できる。
+Nix flake を使って `rinzed`、zenz モデル、SKK 辞書、および各フロントエンドを導入する手順。flake が提供する `rinzed` にはモデルと辞書の既定パスが組み込まれているため、PATH に通せば各フロントエンドから引数なしで起動できる。
 
 | ページ | 内容 |
 | --- | --- |
-| [flake.md](flake.md) | 試用 (`nix run ...#demo`)、flake の出力一覧、モデルや辞書の既定値の変え方 (`override`) |
-| [neovim.md](neovim.md) | home-manager と lazy.nvim、overlay (`programs.neovim`)、nixvim での導入手順 |
-| [fcitx5.md](fcitx5.md) | NixOS での fcitx5 アドオンの導入、`fcitx5-skk` と並べて使う設定 |
-| [macos.md](macos.md) | home-manager での macOS の入力メソッドの導入、手元で組んで入れる手順 |
+| [flake.md](flake.md) | 試用（`nix run ...#demo`）、flake の出力一覧、辞書のカスタマイズ、`rinzed` の常駐設定 |
+| [neovim.md](neovim.md) | home-manager + lazy.nvim、overlay（`programs.neovim`）、nixvim での導入手順 |
+| [fcitx5.md](fcitx5.md) | NixOS での fcitx5 アドオン導入と `fcitx5-skk` との併用設定 |
+| [macos.md](macos.md) | home-manager による macOS 入力メソッドの導入とローカルビルド手順 |

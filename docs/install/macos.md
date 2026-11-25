@@ -1,13 +1,12 @@
 # macOS で入れる
 
-入力メソッドの振る舞いや診断の詳細は [macOS](../frontends/macos.md) を参照。macOS 14 以降の Apple silicon で使える。
+macOS 14 以降の Apple Silicon 環境に対応している。動作仕様や設定の詳細は [macOS](../frontends/macos.md) を参照。
 
-## home-manager で入れる
+## home-manager で導入する
 
-[rinzed を常駐させる](flake.md#rinzed-を常駐させる)モジュールで `services.rinzed.macos.enable` を立てる。
+[rinzed を常駐させる](flake.md#rinzed-を常駐させる)モジュールで `services.rinzed.macos.enable = true` を設定する。
 
 ```nix
-# home-manager のモジュール
 { inputs, ... }:
 {
   imports = [ inputs.rinze.homeManagerModules.default ];
@@ -18,28 +17,22 @@
 }
 ```
 
-反映すると、flake の `rinze-macos` を `~/Library/Input Methods/rinze.app` に複製し、署名し直して、入力ソースを macOS に登録する。入力ソースを有効にするのは手でする ([入力ソースを足す](#入力ソースを足す))。
+設定を反映すると、`rinze.app` が `~/Library/Input Methods/` へ複製・ad-hoc 署名され、macOS へ登録される。macOS の入力メソッドはシンボリックリンク経由では読み込まれないため、Nix ストアから実体をコピーし、更新があったときだけ差し替えてプロセスを再起動する仕組みにしている。アプリが利用する `rinzed` には `services.rinzed.package` が引き継がれる。
 
-- macOS はシンボリックリンクの入力メソッドを読まないので、ストアのものを複製して置く。複製元が変わったときだけ入れ替え、動いている rinze を終了する。次の打鍵で macOS が新しいものを起動する。
-- アプリが起動する rinzed は `services.rinzed.package` になる。辞書を `override` で変えた rinzed を渡せば、アプリもそれを使う。
-- 署名は手元だけで通る ad-hoc のもので、Apple の公証は受けていない。
+## 入力ソースを有効にする
 
-## 入力ソースを足す
+初回導入時は、システム設定の「キーボード」→「入力ソース」→「編集」→「＋」から「日本語」配下の `rinze` を追加し、メニューバーの入力メニューから選択する（一覧に出ない場合は再ログインする）。macOS はユーザーがシステム設定から追加した入力ソースのみを永続化するため、コマンドからの有効化ではなく手動追加が必要となる。
 
-初めて入れたときは、システム設定の「キーボード」→「入力ソース」→「編集」→「＋」で、「日本語」にある rinze を足し、メニューバーの入力メニューから rinze を選ぶ。一覧に出ないときはログインし直す。
+## ローカルビルドして試す
 
-macOS は、利用者がシステム設定で足した入力ソースだけを覚える。コマンドから有効にしても、ログインし直すと外れる。
-
-## 手元で組んで入れる
-
-Xcode の `swiftc` で組む。nix のパッケージを使わずにソースから試すときに使う。
+Nix パッケージを使わずにソースから直接ビルドする場合は、Xcode の `swiftc` を使って組み立てる。
 
 ```sh
 nix build .#rinzed
 RINZED=$PWD/result/bin/rinzed nix develop -c macos/build.sh
 ```
 
-`macos/build/rinze.app` ができる。動いているアプリを上書きすると署名が合わなくなって起動できないので、前のものを消してから複製する。
+`macos/build/rinze.app` が生成される。稼働中のアプリへ上書きコピーすると署名が壊れて起動できなくなるため、古いバンドルを削除してから配置し、プロセスを再起動して登録する。
 
 ```sh
 trash ~/Library/Input\ Methods/rinze.app
@@ -48,8 +41,8 @@ pkill -x rinze
 ~/Library/Input\ Methods/rinze.app/Contents/MacOS/rinze --register
 ```
 
-`rinze --register` は入力ソースを macOS に登録し、すぐ終わる。そのあと[入力ソースを足す](#入力ソースを足す)。`RINZED` を渡さずに組んだときは、[`defaults` の `rinzed`](../frontends/macos.md#rinzed-の起動と応答の待ち) で rinzed の場所を渡す。
+登録後に[入力ソースを有効にする](#入力ソースを有効にする)。
 
-## 外す
+## アンインストール
 
-システム設定の入力ソースから rinze を外し、`services.rinzed.macos.enable` を消して反映したあと、`~/Library/Input Methods/rinze.app` と `~/Library/Input Methods/.rinze.app.source` を消す。モジュールは複製したアプリを消さない。
+システム設定の入力ソースから `rinze` を削除し、`services.rinzed.macos.enable` を外して設定を反映したあと、`~/Library/Input Methods/` 配下の `rinze.app` と `.rinze.app.source` を手動で削除する。

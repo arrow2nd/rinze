@@ -1,10 +1,10 @@
 # fcitx5 で入れる
 
-fcitx5 アドオンの振る舞いや診断の詳細は [fcitx5](../frontends/fcitx5.md) を参照。
+fcitx5 アドオンの挙動や診断方法の詳細は [fcitx5](../frontends/fcitx5.md) を参照。
 
-## NixOS で入れる
+## NixOS への導入
 
-flake の `fcitx5-rinze` を fcitx5 のアドオンに足す。アドオンは動かす fcitx5 と同じ版に対してビルドする必要があるので、`inputs.rinze.inputs.nixpkgs.follows` でシステムの nixpkgs に揃える。
+flake の `fcitx5-rinze` を fcitx5 のアドオンとして追加する。アドオンは実行環境の fcitx5 本体と ABI を揃えてビルドする必要があるため、`inputs.rinze.inputs.nixpkgs.follows` でシステムの `nixpkgs` に合わせる。
 
 ```nix
 # flake.nix の inputs
@@ -15,7 +15,7 @@ rinze = {
 ```
 
 ```nix
-# NixOS のモジュール
+# NixOS モジュール
 { inputs, pkgs, ... }:
 {
   i18n.inputMethod = {
@@ -26,13 +26,11 @@ rinze = {
 }
 ```
 
-アドオンは PATH の `rinzed` を起動するので、flake の `rinzed` を home-manager の `home.packages` などで入れる。fcitx5 を systemd の user unit で動かしていて、unit の PATH に `/etc/profiles/per-user/$USER/bin` が入っていれば、home-manager で入れた rinzed が見つかる。
+あわせて `rinzed` を home-manager の `home.packages` や[常駐サービス](flake.md#rinzed-を常駐させる)として導入し、fcitx5 の環境から見つかるようにする。設定を反映して fcitx5 を再起動したら、`fcitx5-configtool`（または `~/.config/fcitx5/profile`）から入力メソッドに `rinze` を追加する。
 
-反映して fcitx5 を起動し直したら、fcitx5-configtool の入力メソッドの一覧 (または `~/.config/fcitx5/profile`) に rinze を足す。
+## fcitx5-skk と併用する
 
-## fcitx5-skk と並べて使う
+`fcitx5-skk` と `rinze` は同じグループにも別グループにも配置できる。
 
-fcitx5-skk と rinze は、同じグループにも別のグループにも置ける。
-
-- 同じグループに `keyboard-us`、`skk`、`rinze` を並べた場合、`TriggerKeys` (既定は `Control+space`) は直接入力と、最後に使った入力メソッドを切り替える。skk と rinze の切り替えには `EnumerateForwardKeys` を割り当てるか、トレイのメニューを使う。
-- グループを分けた場合 (`keyboard-us` と `skk` のグループ、`keyboard-us` と `rinze` のグループ)、`EnumerateGroupForwardKeys` (既定は `Super+space`) でグループを切り替える。
+- **同じグループに並べる場合**: `TriggerKeys`（既定 `Control+space`）は直接入力と直前に使った入力メソッドを切り替え、`skk` と `rinze` の切り替えには `EnumerateForwardKeys` やトレイメニューを使う。
+- **グループを分ける場合**: `keyboard-us` + `skk` と `keyboard-us` + `rinze` に分け、`EnumerateGroupForwardKeys`（既定 `Super+space`）でグループごと切り替える。

@@ -1,11 +1,21 @@
-# 検査
+# 静的解析と品質検査
 
-`tests/lint.sh` は次の道具を走らせ、`nix flake check` の `lint-lua` と `lint-rust` も同じものを走らせる。
+`tests/lint.sh` で Lua と Rust のフォーマット、静的解析、不要コード検出、複雑度チェックを一括実行する。引数に `lua` または `rust` を渡すと片方だけ実行でき、`nix flake check` でも同じ検査が走る。
 
-| 対象 | フォーマッタ | リンタと不要なコード | 複雑性 |
-| --- | --- | --- | --- |
-| Lua (`nvim`、`tests`、`nix/demo.lua`) | stylua (`.stylua.toml`) | luacheck (`.luacheckrc`)。未使用の変数、引数、値 | luacheck の循環的複雑度 (10 まで) |
-| Rust | rustfmt | clippy (`-D warnings`、lint の設定は `Cargo.toml` の `[workspace.lints]`)。`unreachable_pub` で外から見えない `pub` を `pub(crate)` にさせ、使われていなければ rustc の `dead_code` が見つける。使われていない依存クレートは cargo-shear | clippy の `cognitive_complexity` (15 まで)、`too_many_lines` (100 行まで)、`too_many_arguments` (7 個まで)。しきい値は `clippy.toml` |
+## 検査の対象と方針
 
-フォーマットを直すには `stylua nvim tests nix` と `cargo fmt` を走らせる。
-しきい値を超える既存の関数は、その関数に印を付けて許している。Lua は `-- luacheck: ignore 561`、Rust は `#[expect(clippy::…)]` で、`git grep -e 'luacheck: ignore' -e 'expect(clippy::'` で一覧できる。`#[expect]` は lint が出なくなると警告になるので、関数を分けたら印も外す。
+- **Lua（`nvim/`、`tests/`、`nix/`）**: `stylua` でフォーマット、`luacheck` で未使用変数・引数や循環的複雑度を検査する。
+- **Rust（ワークスペース全体）**: `rustfmt` でフォーマット、`clippy` で警告をエラー扱いとしつつ可視性（`unreachable_pub`）や関数の複雑度・長さ・引数数を検査する。未使用の依存クレートは `cargo-shear` で検出する。
+
+具体的なルールや複雑度のしきい値は、リポジトリ直下の `.stylua.toml`、`.luacheckrc`、`Cargo.toml`（`[workspace.lints]`）、`clippy.toml` に定義している。
+
+## フォーマット修正と例外の扱い
+
+フォーマットの自動修正は以下のコマンドで行う。
+
+```sh
+stylua nvim tests nix
+cargo fmt
+```
+
+やむを得ず複雑度などのしきい値を超える関数には、Rust では `#[expect(clippy::...)]`、Lua では `-- luacheck: ignore ...` を付けて明示的に許可する。特に Rust の `#[expect]` はリファクタリングで警告が解消されると逆に通知されるため、不要になった例外指定を残さずに済む。

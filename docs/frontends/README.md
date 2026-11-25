@@ -1,11 +1,11 @@
 # フロントエンド
 
-フロントエンドは接続ごとに独立した入力状態を持ち、キーを `rinzed` へ送って応答を表示する。現在、Neovim プラグイン、Linux の fcitx5 アドオン、macOS の入力メソッドがある。
+各フロントエンドは `rinzed` との接続ごとに独立した入力状態を持ち、キー入力と左文脈を送って返ってきた表示指示を描画する薄いクライアントとして設計している。
 
 | ページ | 内容 |
 | --- | --- |
-| [neovim.md](neovim.md) | Neovim プラグインの設定、キー割り当て、モードと状態、ステータスライン、ソケット |
-| [neovim-cmdline.md](neovim-cmdline.md) | Neovim のコマンドライン (`/` `?` `:`) での入力、フロート表示、左文脈、blink.cmp との兼ね合い |
-| [neovim-blink.md](neovim-blink.md) | blink.cmp との連携 (`blink = true`)、`enter` preset、内部 API への依存 |
-| [fcitx5.md](fcitx5.md) | fcitx5 アドオンの構成、打ち方・表示、rinzed の起動と応答待ち、左文脈、診断 |
-| [macos.md](macos.md) | macOS の入力メソッドの構成、打ち方・表示、左文脈、設定と診断 |
+| [neovim.md](neovim.md) | Neovim プラグインの基本設定、キー制御の方針、ステータスライン API、デーモン管理 |
+| [neovim-cmdline.md](neovim-cmdline.md) | Neovim のコマンドライン入力（`/` `?` `:`）の設計、フロート表示と左文脈の扱い |
+| [neovim-blink.md](neovim-blink.md) | blink.cmp 連携の仕組み、`enter` preset との共存方法 |
+| [fcitx5.md](fcitx5.md) | Linux 向け fcitx5 アドオンの構成、挙動、デーモン起動・タイムアウト設計、診断方法 |
+| [macos.md](macos.md) | macOS 向け入力メソッドの構成、挙動、設定と診断方法 |

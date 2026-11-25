@@ -1,57 +1,35 @@
 # Neovim
 
-`nvim/` を runtimepath に加え (Nix では `rinze-nvim`、[Neovim に入れる](../install/neovim.md))、`setup` を呼ぶ。ソケットに接続できなかったときは `cmd` で rinzed を起動する。
-`cmd` の既定は `{ 'rinzed' }` で、flake の `rinzed` が PATH にあればモデルと辞書の既定値で起動する。flake の外で入れた rinzed では、モデルと辞書を引数で渡す。
+Neovim プラグイン（`nvim/`）を runtimepath に追加し、`setup` を呼んで利用する。ソケットに接続できない場合は `cmd`（既定は `{ 'rinzed' }`）で `rinzed` を自動起動する。flake で導入した `rinzed` が PATH にあれば、モデルや辞書の引数は不要である。
 
 ```lua
 require('rinze').setup({
-  -- flake の rinzed が PATH にあれば cmd は要らない
-  cmd = { 'rinzed', '--model', '/path/to/ggml-model-Q5_K_M.gguf', '--dict', '/path/to/SKK-JISYO.L', '--dict', '/path/to/SKK-JISYO.jinmei' },
+  -- flake の rinzed が PATH にあれば cmd は省略できる
+  cmd = { 'rinzed', '--model', '/path/to/model.gguf', '--dict', '/path/to/SKK-JISYO.L' },
 })
--- C-j は rinze の中で SKK の C-j (確定、ひらがなに戻る) に使うので、オンオフには別のキーを割り当てる
+-- C-j は SKK の確定・ひらがな復帰に使うため、有効/無効の切り替えには別のキーを割り当てる
 vim.keymap.set('i', '<C-l>', function() require('rinze').toggle() end)
 vim.o.statusline = "%f %{v:lua.require'rinze'.status()}"
 ```
 
-コマンドラインでの入力は [コマンドライン](neovim-cmdline.md)、blink.cmp との連携は [blink.cmp との連携](neovim-blink.md) を参照。
+導入方法は [Neovim に入れる](../install/neovim.md)、コマンドラインでの入力は [Neovim のコマンドライン](neovim-cmdline.md)、補完メニューとの連携は [blink.cmp との連携](neovim-blink.md) を参照。
 
-## 有効化とキー割り当て
+## 設計の方針
 
-`:RinzeEnable` `:RinzeDisable` `:RinzeToggle` でも切り替えられる。有効な間は挿入モードの印字可能文字と Space、Enter、BackSpace、`C-g`、`C-j`、`C-q`、Esc を rinze が受け取る。
-無効な間は、rinze の autocmd もキーの割り当ても置かず、rinzed との接続も持たないので、打鍵やカーソルの移動に処理を足さない。`setup` で読み込むときは、`require` に約 1 ms、Lua のヒープに約 120 KB かかる (`nvim --clean` の `--startuptime` と `collectgarbage('count')`、5 回)。
-
-- 割り当ては挿入モードの間だけ、そのバッファにバッファローカルの `<nowait>` で置き、挿入モードを抜けるか別のバッファへ移ると外して、置く前の割り当てを戻す。global な割り当て (mini.pairs など) は書き換えない。
-- ほかのプラグインのバッファローカルの割り当て (nvim-ts-autotag の `>` など) より rinze が優先する。同じキーで始まる長い割り当て (llama.vim の挿入モードの `<Leader>llf` など) があっても、続きのキーを `timeoutlen` だけ待たない。
-- ASCII モードの間は `C-j` 以外の割り当てを外すので、打鍵は rinze を経由せず、rinze が無効なときと同じに Neovim とほかのプラグインが処理する。
-- rinze が処理しなかったキー (見出しの無いときの Enter、BackSpace、Space と、Esc) は、rinze が無いときに働く割り当て (mini.pairs の `<CR>` と `<BS>`、picker の `<CR>` と `<Esc>` など) に渡す。割り当てが無ければ Neovim がそのまま処理する。
-
-有効にした直後はひらがなモードで始まる。挿入モードを抜けると入力途中のものを確定するが、モードはそのまま残り、次に挿入モードに入ったときも同じモードで続く。
-`C-o` で一時的にノーマルモードに入ったとき (`C-o:` でコマンドラインに入ったときを含む) は確定せず、挿入モードに戻ると見出しの入力を続けられる。戻ったときにカーソルが動いていれば、元の位置に確定する。
-
-確定した文字列は打鍵として Neovim に入力するので、`.` で繰り返せ、`u` は 1 回の挿入をまとめて戻す。制御文字は `C-v` を前に置いて文字として入れ、打鍵や Ex コマンドとして働かせない。
-未確定文字列があるときにカーソルを動かすか、挿入モードのまま別のウィンドウへ移ると、未確定文字列を表示どおりに元の位置へ確定する。
-
-`C-q` は端末のフロー制御 (XON) と同じコードだが、Neovim は端末を raw モードにしてフロー制御を切るので、Neovim の動いている間は rinze に届く (tmux の中で確かめた)。届かない場合は、端末エミュレータが `C-q` を自分で使っていないかを確かめる。
+- **無効時のオーバーヘッドゼロ**: rinze が無効な間は autocmd もキーマッピングも設定せず、`rinzed` との接続も保持しない。有効化するまで通常の編集操作に一切介入しない設計である。
+- **他プラグインとの共存**: キーマッピングは挿入モードの間だけ対象バッファへ `<nowait>` 付きでバッファローカルに設定し、挿入モードを抜けるか別バッファへ移動すると元のマッピングを復元する。グローバルマッピングは書き換えず、rinze が処理しなかったキー（未確定文字列がないときの Enter や BackSpace、Esc など）は元のマッピングや Neovim の既定動作へフォールバックする。
+- **ASCII モードでの素通し**: ASCII モード中は `C-j` 以外のマッピングを外すため、rinze が無効なときと同様に Neovim 本体や他プラグインへキーがそのまま届く。
+- **Neovim の編集モデルとの統合**: 確定文字列はキー入力として流し込むため、`.` による繰り返しや `u` によるアンドゥが自然に機能する。制御文字はエスケープして挿入し、意図しないコマンド実行を防ぐ。また、`C-o` による一時的なノーマルモード遷移では未確定状態を維持し、元の位置へ戻れば見出し入力を続けられる。
 
 ## ステータスラインと API
 
-`require('rinze').status()` はステータスラインに出す文字列を返し、無効な間は空文字列を返す。表示は `setup` の `mode_labels` で変えられ、既定は次のとおり。`require('rinze').mode()` はモードの名前 (`hiragana` など、[通信](../architecture/protocol.md)の `mode` と同じ) を返し、無効な間は nil を返す。
+`:RinzeEnable` `:RinzeDisable` `:RinzeToggle` コマンド、または Lua API で有効・無効を切り替えられる。
 
-| モード | 既定の表示 |
-| --- | --- |
-| `hiragana` | `かな` |
-| `katakana` | `カナ` |
-| `halfwidth-katakana` | `ｶﾅ` |
-| `ascii` | `aA` |
-| `fullwidth-latin` | `全英` |
+- `require('rinze').status()`: ステータスライン用のモード表示文字列を返す（無効時は空文字列）。表示ラベルは `setup` の `mode_labels` で変更できる（既定: `かな` / `カナ` / `ｶﾅ` / `aA` / `全英`）。
+- `require('rinze').mode()`: 現在のモード名（[通信設計](../architecture/protocol.md)の `mode` と同じ）を返す（無効時は nil）。
 
-## ソケットと単一プロセス
+## ソケットと単一デーモンの共有
 
-ソケットは既定で Linux では `$XDG_RUNTIME_DIR/rinze.sock` (無ければ `$XDG_CACHE_HOME/rinze/rinze.sock`、それも無ければ `~/.cache/rinze/rinze.sock`)、macOS では `~/Library/Caches/rinze/rinze.sock` で、`setup` の `socket` で変えられる。
-macOS で `$TMPDIR` を使わないのは、nix develop などで値が変わり、同じ利用者のプロセスどうしで一致しないことがあるため。
-Unix ドメインソケットのパスには上限 (Linux で 107 バイト、macOS で 103 バイト) があり、超えると rinzed はモデルを読む前に原因を書いて終了し、プラグインはそれをエラーとして表示する。
+既定のソケットパスは Linux で `$XDG_RUNTIME_DIR/rinze.sock`（未設定時はキャッシュディレクトリ配下）、macOS で `~/Library/Caches/rinze/rinze.sock` を使用する。macOS で `$TMPDIR` を避けているのは、`nix develop` 等でプロセスごとに値が変わり、同じユーザー間でもソケットを共有できなくなるためである。
 
-プラグインは接続前にソケットが自分の所有する Unix ドメインソケットであることを確かめ、`vim.uv` のパイプと `vim.mpack` で応答 (`kind == 1`) だけを読む片方向の通信を行う (`sockconnect` の `rpc = true` は使わず、接続先から Neovim API を呼ばせない)。応答の待ちは `request_timeout` (既定 10000 ms) で打ち切る。
-
-Neovim を同時にいくつ開いても rinzed は 1 つだけ動く。rinzed はソケットのディレクトリを 0700、ロックファイル (`rinze.sock.lock`) とソケットを 0600 で作り、生きている間ずっとロックを保持する。ロックを取れなかったものは何もせずに 0 で終了し、プラグインは起動したものが 0 で終了した場合も、先に動いている rinzed が待ち受けを始めるまで待つ。
-ロックは rinzed が落ちれば外れるので、ロックを取れた rinzed は自分の所有する残ったソケットを前の rinzed の残骸として消してから bind する。
+複数の Neovim インスタンスや他フロントエンドから同時に起動されても、`rinzed` はロックファイルによる排他制御で常に 1 プロセスのみが常駐する。また、プラグインは応答のみを読む片方向通信を採用しており、ソケット経由で Neovim API を呼ばれない安全設計となっている。

@@ -1,11 +1,10 @@
 # Neovim に入れる
 
-設定と使い方の詳細は [Neovim](../frontends/neovim.md) を参照。
+設定オプションや動作仕様の詳細は [Neovim](../frontends/neovim.md) を参照。
 
 ## home-manager と lazy.nvim
 
-Neovim の設定を Nix の外 (out-of-store symlink など) に置き、lazy.nvim でプラグインを管理している場合の入れ方。home-manager でプラグインを決まった場所に置き、lazy.nvim の `dir` で読む。
-lazy.nvim は既定で runtimepath と packpath を作り直すので、`pack/*/start` に置いたプラグインは読まれない。
+Neovim の設定を Nix の外に置き、lazy.nvim でプラグインを管理している場合は、home-manager でプラグインを固定パスへ配置して lazy.nvim の `dir` から読み込む（lazy.nvim は起動時に runtimepath と packpath を再構築するため、`pack/*/start` 配置は使えない）。
 
 ```nix
 # flake.nix の inputs
@@ -13,7 +12,7 @@ rinze.url = "git+file:///path/to/rinze";
 ```
 
 ```nix
-# home-manager のモジュール
+# home-manager モジュール
 { inputs, pkgs, ... }:
 let
   rinze = inputs.rinze.packages.${pkgs.stdenv.hostPlatform.system};
@@ -25,7 +24,7 @@ in
 ```
 
 ```lua
--- lazy.nvim のプラグインの一覧
+-- lazy.nvim のプラグイン定義
 {
   dir = vim.fn.stdpath("data") .. "/rinze",
   name = "rinze",
@@ -36,16 +35,15 @@ in
 },
 ```
 
-`inputs.rinze.inputs.nixpkgs.follows` で nixpkgs を揃えると、rinzed をビルドするコンパイラも変わる。[複数の辞書](../usage/dictionaries.md#複数の辞書)などの測定の数字は rinze の `flake.lock` の nixpkgs で出したもの。nixos-26.05 (`6dadaf43`) に揃えてビルドした rinzed でも、コーパスの全区間の結果は同じだった。
+## overlay を使う（programs.neovim）
 
-## overlay を使う (NixOS、nix-darwin、home-manager の programs.neovim)
+NixOS、nix-darwin、home-manager の `programs.neovim` を使う場合は、`overlays.default` を適用すると `pkgs.rinzed` と `pkgs.rinze-nvim` を直接参照できる。
 
 ```nix
 nixpkgs.overlays = [ inputs.rinze.overlays.default ];
 ```
 
 ```nix
-# home-manager
 programs.neovim = {
   enable = true;
   extraPackages = [ pkgs.rinzed ];
@@ -57,7 +55,7 @@ programs.neovim = {
 };
 ```
 
-`extraPackages` は Neovim の PATH だけに rinzed を足す。端末から rinzed を使わないならこれで足りる。
+`extraPackages` を指定すると Neovim 実行時の PATH にのみ `rinzed` が追加されるため、端末から直接 `rinzed` を使う予定がなければこれで十分である。
 
 ## nixvim
 

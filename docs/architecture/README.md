@@ -1,9 +1,9 @@
-# 構成と内部仕様
+# アーキテクチャ
 
-クレートの役割分担、msgpack-rpc の通信仕様、スレッドと常駐メモリ・資源の設計。
+rinze の全体構成、デーモンとフロントエンド間の通信設計、性能とリソース管理の方針。
 
 | ページ | 内容 |
 | --- | --- |
-| [crates.md](crates.md) | クレート一覧とフロントエンド・接続の役割分担 |
-| [protocol.md](protocol.md) | msgpack-rpc の 6 種類の要求、応答フォーマット、キャッシュと切断時の挙動 |
-| [performance.md](performance.md) | 点数づけのスレッド (`OMP_WAIT_POLICY`)、rinzed の常駐メモリ、fcitx5 アドオンの資源 |
+| [crates.md](crates.md) | ワークスペース構成と各クレート・フロントエンドの責務分担 |
+| [protocol.md](protocol.md) | msgpack-rpc による通信設計、要求・応答の構造、状態管理とセキュリティ境界 |
+| [performance.md](performance.md) | 推論スレッドの設計、フォールバック戦略、メモリとプラットフォーム最適化の方針 |
