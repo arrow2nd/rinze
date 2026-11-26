@@ -415,6 +415,18 @@ local function flush_in_place(session)
   show(session, res)
 end
 
+local function flush_to_ascii(session)
+  if not session.chan or (session.preedit == '' and session.mode == 'ascii') then
+    return
+  end
+  local ok, res = pcall(request, session, 'flush', 'ascii')
+  if not ok then
+    return
+  end
+  session.surface.insert_flushed(session, res.commit)
+  show(session, res)
+end
+
 local function flush_if_cursor_left_preedit(session)
   if session.surface.cursor_left_preedit(session) then
     flush_in_place(session)
@@ -704,23 +716,23 @@ function insert.attach(session)
     group = group,
     callback = sync_insert,
   })
-  local function flush()
-    flush_in_place(session)
+  local function leave_to_ascii()
+    flush_to_ascii(session)
   end
-  -- InsertLeave は i_CTRL-O でも起きる。CTRL-O のあとは挿入モードに戻るので見出しを残し、
+  -- InsertLeave は i_CTRL-O でも起きる。CTRL-O のあとは挿入モードに戻るので見出しとモードを残し、
   -- 戻ったときにカーソルが動いていれば CursorMovedI で確定する
   vim.api.nvim_create_autocmd('InsertLeave', {
     group = group,
     callback = function()
       if not vim.api.nvim_get_mode().mode:match('^ni') then
-        flush()
+        leave_to_ascii()
       end
     end,
   })
-  -- 挿入モードのまま別のウィンドウへ移ったときは InsertLeave が起きない
-  vim.api.nvim_create_autocmd({ 'WinLeave', 'BufLeave' }, {
+  -- 挿入モードのまま別のウィンドウやバッファへ移ったとき、またはフォーカスを失ったときは InsertLeave が起きない
+  vim.api.nvim_create_autocmd({ 'WinLeave', 'BufLeave', 'FocusLost' }, {
     group = group,
-    callback = flush,
+    callback = leave_to_ascii,
   })
   vim.api.nvim_create_autocmd('CursorMovedI', {
     group = group,
@@ -769,6 +781,9 @@ local cmdline_hooks = {
     local session = sessions.c
     disconnect(session)
     disable(session)
+  end,
+  focus_lost = function()
+    flush_to_ascii(sessions.c)
   end,
   moved = function()
     flush_if_cursor_left_preedit(sessions.c)

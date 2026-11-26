@@ -112,7 +112,7 @@ local function type_into(line, keys)
   snapshots = {}
   vim.cmd('enew!')
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { line })
-  vim.api.nvim_feedkeys(vim.keycode('A' .. keys .. settle .. snap .. '<Esc>'), 'x', false)
+  vim.api.nvim_feedkeys(vim.keycode('A<C-j>' .. keys .. settle .. snap .. '<Esc>'), 'x', false)
   return buffer_text(), snapshots
 end
 
@@ -312,9 +312,10 @@ local function measure(label, before_space)
     type_into(left_context_unseen_by_rinzed, round)
   end
   local typing, spaces = {}, {}
-  local space_index = #'Kanji' + 1
+  local ctrl_j_typed_by_type_into = 1
+  local space_index = ctrl_j_typed_by_type_into + #'Kanji' + 1
   local esc_typed_by_type_into = 1
-  local per_round = #'Kanji' + 3 + #'Asitanoasa' + 1 + esc_typed_by_type_into
+  local per_round = ctrl_j_typed_by_type_into + #'Kanji' + 3 + #'Asitanoasa' + 1 + esc_typed_by_type_into
   for i, ms in ipairs(key_ms) do
     table.insert((i - 1) % per_round + 1 == space_index and spaces or typing, ms)
   end

@@ -348,6 +348,14 @@ check(
 check('ASCII モードでは英字をそのまま打てる', snap(2).cmdline, 'かabc')
 check('C-j でひらがなに戻る', { snap(3).mode, snap(4).cmdline }, { 'hiragana', 'かabcか' })
 
+lua('T.fresh()')
+type_keys(':<C-j>Asita<Cmd>doautocmd FocusLost<CR>' .. S .. 'abc' .. S .. '<Esc>')
+check(
+  'コマンドライン中の FocusLost で未確定文字列を確定して ASCII モードに戻る',
+  { snap(1).cmdline, snap(1).mode, snap(2).cmdline },
+  { 'あした', 'ascii', 'あしたabc' }
+)
+
 lua([[
 vim.keymap.set('c', '<CR>', function()
   table.insert(T.events, 'global <CR>')

@@ -145,7 +145,7 @@ local function type_corpus(pass)
       end
       vim.api.nvim_feedkeys(vim.keycode('<Esc>'), 'mt', false)
     end)
-    vim.api.nvim_feedkeys(vim.keycode('i' .. step_key), 'mtx', false)
+    vim.api.nvim_feedkeys(vim.keycode('i<C-j>' .. step_key), 'mtx', false)
     local got = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), '\n')
     if got ~= sentence.text then
       mismatched = mismatched + 1

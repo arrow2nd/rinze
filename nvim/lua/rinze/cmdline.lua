@@ -182,6 +182,10 @@ function M.attach(_session, hooks)
     group = group,
     callback = hooks.leave,
   })
+  vim.api.nvim_create_autocmd('FocusLost', {
+    group = group,
+    callback = hooks.focus_lost,
+  })
   vim.api.nvim_create_autocmd({ 'CursorMovedC', 'CmdlineChanged' }, {
     group = group,
     callback = hooks.moved,

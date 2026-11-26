@@ -387,8 +387,16 @@ impl Session {
         self.response(true, commit, Some(converter))
     }
 
+    /// [`Session::flush`] したうえで、モードを `mode` にする。
+    pub fn flush_to(&mut self, mode: Mode, converter: &mut dyn Converter) -> Response {
+        self.version += 1;
+        let commit = self.take_pending(converter);
+        self.input = Input::new(mode);
+        self.response(true, commit, Some(converter))
+    }
+
     /// 入力途中のものを確定せずに捨て、状態を空にする。モードは変えず、辞書登録中なら外側のモードに戻る。
-    /// 何も確定しないので [`Converter`] を呼ばない。フロントエンドが入力先からフォーカスを失ったときに使う。
+    /// 何も確定しないので [`Converter`] を呼ばない。
     pub fn discard(&mut self) -> Response {
         self.version += 1;
         if let Input::Kana(kana) = &mut self.input {
@@ -397,12 +405,17 @@ impl Session {
         self.response(true, String::new(), None)
     }
 
+    /// 入力途中のものを確定せずに捨て、状態を空にしたうえでモードを `mode` にする。
+    /// 何も確定しないので [`Converter`] を呼ばない。フロントエンドが入力先からフォーカスを失ったときなどに使う。
+    pub fn discard_to(&mut self, mode: Mode) -> Response {
+        self.version += 1;
+        self.input = Input::new(mode);
+        self.response(true, String::new(), None)
+    }
+
     /// [`Session::flush`] したうえで、モードを始めのひらがなに戻す。フロントエンドが入力を有効にしたときに使う。
     pub fn reset(&mut self, converter: &mut dyn Converter) -> Response {
-        self.version += 1;
-        let commit = self.take_pending(converter);
-        self.input = Input::default();
-        self.response(true, commit, Some(converter))
+        self.flush_to(Mode::Hiragana, converter)
     }
 
     /// 見出しの入力中 (▽) に、[`Response::reading`] の候補から `word` を選んで確定する。Space で変換して `word` まで送って確定したのと同じに扱う。

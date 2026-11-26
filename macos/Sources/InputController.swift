@@ -71,16 +71,20 @@ final class RinzeInputController: IMKInputController {
     override func activateServer(_ sender: Any!) {
         active = true
         if shown == nil {
-            apply(rinze_client_discard(connection))
+            apply(rinze_client_discard_to(connection, RINZE_MODE_ASCII), announce: false)
         } else {
             render()
         }
     }
 
-    // フォーカスが外れたときは、入力途中のものを確定せずに捨てる。入力モードは残る
+    // フォーカスが外れたときは、入力途中のものを確定せずに捨て、ASCII モードに戻す
     override func deactivateServer(_ sender: Any!) {
-        discard()
         active = false
+        modeTimer?.invalidate()
+        modeFlash = ""
+        if shown != nil && (!idle || mode != RINZE_MODE_ASCII) {
+            apply(rinze_client_discard_to(connection, RINZE_MODE_ASCII), announce: false)
+        }
         Panel.shared.hide(owner: self)
     }
 
@@ -135,12 +139,6 @@ final class RinzeInputController: IMKInputController {
         }
     }
 
-    private func discard() {
-        if !idle {
-            apply(rinze_client_discard(connection))
-        }
-    }
-
     /// カーソルより前の文字列。未確定文字列があれば、その前まで。
     private func leftSurrounding() -> (text: String, cursor: Int)? {
         guard !IsSecureEventInputEnabled(), let client = client() else {
@@ -165,7 +163,7 @@ final class RinzeInputController: IMKInputController {
     }
 
     @discardableResult
-    private func apply(_ response: OpaquePointer?) -> Bool {
+    private func apply(_ response: OpaquePointer?, announce: Bool = true) -> Bool {
         guard let response else {
             var message: UnsafePointer<CChar>?
             let failure = rinze_client_failure(connection, &message)
@@ -193,7 +191,7 @@ final class RinzeInputController: IMKInputController {
         rinze_response_free(shown)
         shown = response
         notice = ""
-        if let before, let after = mode, before != after {
+        if announce, let before, let after = mode, before != after {
             flash(modeLabel(after))
         }
         render()
@@ -302,7 +300,7 @@ final class RinzeInputController: IMKInputController {
             }
             timer.invalidate()
             if status == RINZE_STATUS_READY {
-                self.apply(rinze_client_discard(self.connection))
+                self.apply(rinze_client_discard_to(self.connection, RINZE_MODE_ASCII), announce: false)
             } else {
                 self.notice = message
                 self.render()

@@ -81,12 +81,14 @@ RinzeResponse *rinze_client_key(RinzeClient *client,
 // 入力途中のものを確定せずに捨てる。入力モードは変えない。
 RinzeResponse *rinze_client_discard(RinzeClient *client);
 
+// 入力途中のものを確定せずに捨て、入力モードを `mode` にする。
+RinzeResponse *rinze_client_discard_to(RinzeClient *client, RinzeMode mode);
+
 // 入力途中のものを表示どおりに確定する。入力モードは変えない。
 RinzeResponse *rinze_client_flush(RinzeClient *client);
 
-// 入力途中のものを確定してから、切り替えのキーを送って `mode` にする。
-RinzeResponse *rinze_client_switch_mode(RinzeClient *client,
-                                        RinzeMode mode);
+// 入力途中のものを表示どおりに確定し、入力モードを `mode` にする。
+RinzeResponse *rinze_client_switch_mode(RinzeClient *client, RinzeMode mode);
 
 // 直前の要求が失敗した理由。`message` には利用者に見せる文を入れる。
 RinzeFailure rinze_client_failure(const RinzeClient *client, const char **message);

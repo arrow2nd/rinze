@@ -211,6 +211,9 @@ void typing(Instance *instance) {
     useRinze(instance);
     Typist t(instance);
     t.enableRinze();
+    FCITX_ASSERT(t.modeLabel() == "aA") << t.modeLabel();
+    FCITX_ASSERT(!t.press("a")) << "初期の ASCII モードでは打鍵をアプリへ通す";
+    FCITX_ASSERT(t.press("Control+j"));
     FCITX_ASSERT(t.modeLabel() == "かな") << t.modeLabel();
     Timings keys{"変換以外の打鍵"};
     Timings spaces{"Space での変換"};
@@ -451,7 +454,7 @@ void typing(Instance *instance) {
     t.cancelAll();
     FCITX_ASSERT(!t.press("BackSpace"));
 
-    // フォーカスが外れると入力途中を確定せずに捨て、学習にも書かず、モードは残す
+    // フォーカスが外れると入力途中を確定せずに捨て、学習にも書かず、ASCII モードに戻る
     auto history = env("RINZE_TEST_HISTORY");
     t.press("q");
     t.type("Asita");
@@ -462,9 +465,10 @@ void typing(Instance *instance) {
     FCITX_ASSERT(t.preedit().empty()) << t.preedit();
     FCITX_ASSERT(!contains(readFile(history), "あした\t")) << readFile(history);
     t.ic()->focusIn();
-    FCITX_ASSERT(t.modeLabel() == "カナ") << t.modeLabel();
-    t.expectCommit("カ");
-    t.type("ka");
+    FCITX_ASSERT(t.modeLabel() == "aA") << t.modeLabel();
+    FCITX_ASSERT(!t.press("a")) << "フォーカス喪失後は ASCII モードなのでアプリへ通す";
+    FCITX_ASSERT(t.press("Control+j"));
+    FCITX_ASSERT(t.modeLabel() == "かな") << t.modeLabel();
     t.type("Asita");
     t.press("space");
     t.press("space");
@@ -472,7 +476,6 @@ void typing(Instance *instance) {
     t.press("Return");
     FCITX_ASSERT(contains(readFile(history), "あした\t" + second))
         << "送って確定した候補は学習に書く: " << readFile(history);
-    t.press("q");
 
     // アプリの reset でも入力途中を捨てる
     t.type("Asita");
@@ -504,6 +507,7 @@ void typing(Instance *instance) {
     for (int i = 0; i < 10; i++) {
         others.push_back(std::make_unique<Typist>(instance, "other" + std::to_string(i)));
         others.back()->enableRinze();
+        FCITX_ASSERT(others.back()->press("Control+j"));
         others.back()->expectCommit("あ");
         others.back()->type("a");
     }
@@ -534,6 +538,7 @@ void typing(Instance *instance) {
     Typist terminal(instance, "terminal");
     terminal.enableRinze();
     FCITX_ASSERT(direct && !direct->isChecked(terminal.ic()));
+    FCITX_ASSERT(terminal.press("Control+j"));
     terminal.type("Asi");
     terminal.expectCommit("あし");
     direct->activate(terminal.ic());
@@ -615,12 +620,13 @@ void autostart(Instance *instance, Waiter &waiter) {
     FCITX_ASSERT(t->lastMillis < 100) << t->lastMillis;
     FCITX_ASSERT(t->auxUp() == "rinze: rinzed を起動しています") << t->auxUp();
     waiter.until(
-        instance, 30'000, [t] { return t->modeLabel() == "かな"; },
+        instance, 30'000, [t] { return t->modeLabel() == "aA"; },
         [=](bool ready, double) {
             FCITX_ASSERT(ready) << "rinzed が待ち受けを始めない: " << t->auxUp();
             FCITX_INFO() << "rinze を有効にしてから rinzed に繋がって表示が戻るまで: "
                          << millisSince(started) << " ms";
             FCITX_ASSERT(t->auxUp().rfind("rinze:", 0) != 0) << t->auxUp();
+            FCITX_ASSERT(t->press("Control+j"));
             t->expectCommit("か");
             t->type("ka");
             t->destroy();

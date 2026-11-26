@@ -290,13 +290,22 @@ pub unsafe extern "C" fn rinze_client_discard(client: *mut RinzeClient) -> *mut 
     request(client, Client::discard)
 }
 
+/// 入力途中のものを確定せずに捨て、入力モードを `mode` にする。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rinze_client_discard_to(
+    client: *mut RinzeClient,
+    mode: RinzeMode,
+) -> *mut RinzeResponse {
+    request(client, |c| c.discard_to(mode.into()))
+}
+
 /// 入力途中のものを表示どおりに確定する。入力モードは変えない。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rinze_client_flush(client: *mut RinzeClient) -> *mut RinzeResponse {
     request(client, Client::flush)
 }
 
-/// 入力途中のものを確定してから、切り替えのキーを送って `mode` にする。
+/// 入力途中のものを表示どおりに確定し、入力モードを `mode` にする。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rinze_client_switch_mode(
     client: *mut RinzeClient,

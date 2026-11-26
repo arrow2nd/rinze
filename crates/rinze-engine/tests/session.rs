@@ -996,6 +996,48 @@ fn flush_はモードを保ち_reset_はひらがなに戻す() {
 }
 
 #[test]
+fn flush_to_と_discard_to_は指定したモードへ切り替える() {
+    let mut ed = Editor::new(Table::new(&[("あした", &["明日", "朝"])]));
+    ed.type_keys("qAsita<Space><Space>");
+    let res = ed.session.flush_to(Mode::Ascii, &mut ed.table);
+    assert_eq!(
+        (
+            res.commit.as_str(),
+            res.mode,
+            res.passthrough,
+            res.preedit.as_str()
+        ),
+        ("朝", Mode::Ascii, true, "")
+    );
+    assert_eq!(ed.table.committed.len(), 1);
+
+    ed.type_keys("<C-j>L");
+    let res = ed.session.flush_to(Mode::Ascii, &mut ed.table);
+    assert_eq!(
+        (res.commit.as_str(), res.mode, res.passthrough),
+        ("", Mode::Ascii, true)
+    );
+
+    let committed_before = ed.table.committed.len();
+    ed.type_keys("<C-j>qAsita<Space><Space>");
+    let res = ed.session.discard_to(Mode::Ascii);
+    assert_eq!(
+        (
+            res.commit.as_str(),
+            res.mode,
+            res.passthrough,
+            res.preedit.as_str()
+        ),
+        ("", Mode::Ascii, true, "")
+    );
+    assert_eq!(
+        ed.table.committed.len(),
+        committed_before,
+        "discard_to は確定も学習への記録もしない"
+    );
+}
+
+#[test]
 fn discard_は入力途中を確定せずに捨て_モードを保つ() {
     let entries: &[(&str, &[&str])] = &[("あした", &["明日", "朝"]), ("かんじ", KANJI)];
     let cases: &[(&str, &str, Mode)] = &[

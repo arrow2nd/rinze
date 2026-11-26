@@ -46,7 +46,7 @@ end)
 local function type_in_new_buffer(keys)
   snapshots = {}
   vim.cmd('enew!')
-  vim.api.nvim_feedkeys(vim.keycode('i' .. keys .. '<Esc>'), 'x', false)
+  vim.api.nvim_feedkeys(vim.keycode('i<C-j>' .. keys .. '<Esc>'), 'x', false)
   return buffer_text(), snapshots
 end
 
@@ -196,10 +196,28 @@ check(
   'すごい！〜！〜!~!~'
 )
 
-type_in_new_buffer('l')
-text, snaps = type_in_new_buffer('abc' .. mode_snapshot .. '<C-j>')
-check('挿入モードを抜けて戻ってもモードを保つ', { text, snaps[1].status }, { 'abc', 'aA' })
 type_in_new_buffer('q')
+snapshots = {}
+vim.api.nvim_feedkeys(vim.keycode('i' .. mode_snapshot .. 'abc<Esc>'), 'x', false)
+check(
+  '挿入モードを抜けると ASCII モードに戻る',
+  { buffer_text(), snapshots[1].status, snapshots[1].a_reaches_rinze },
+  { 'abc', 'aA', false }
+)
+vim.cmd('enew!')
+snapshots = {}
+vim.api.nvim_feedkeys(vim.keycode('i<C-j>Asita<Cmd>doautocmd FocusLost<CR>' .. mode_snapshot .. 'abc<Esc>'), 'x', false)
+check(
+  'FocusLost で未確定文字列を確定して ASCII モードに戻る',
+  { buffer_text(), snapshots[1].status, snapshots[1].a_reaches_rinze },
+  { 'あしたabc', 'aA', false }
+)
+vim.cmd('enew!')
+vim.cmd('vsplit')
+snapshots = {}
+vim.api.nvim_feedkeys(vim.keycode('i<C-j>Asita<Cmd>wincmd w<CR>' .. mode_snapshot .. 'abc<Esc>'), 'x', false)
+check('WinLeave で ASCII モードに戻る', { snapshots[1].status, snapshots[1].a_reaches_rinze }, { 'aA', false })
+vim.cmd('only!')
 vim.cmd('RinzeDisable')
 check('無効にするとモードは nil', { rinze.mode(), rinze.status() }, { nil, '' })
 vim.cmd('RinzeEnable')
@@ -328,6 +346,8 @@ end)
 local function type_into(lines, keys, after)
   snapshots = {}
   vim.cmd('enew!')
+  vim.cmd('RinzeDisable')
+  vim.cmd('RinzeEnable')
   vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
   vim.api.nvim_win_set_cursor(0, { 1, 0 })
   vim.api.nvim_feedkeys(vim.keycode(keys .. '<Esc>' .. (after or '')), 'x', false)

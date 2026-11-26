@@ -165,6 +165,7 @@ public:
     bool press(std::string key);
     void flush();
     void discard();
+    void focusOut();
     void switchMode(RinzeMode mode);
     void connect();
     void startupFinished(RinzeStatus status, const char *message);
@@ -176,7 +177,7 @@ public:
     bool showsCandidates() const;
 
 private:
-    bool apply(RinzeResponse *raw);
+    bool apply(RinzeResponse *raw, bool announce = true);
     void render();
 
     RinzeEngine &engine_;
@@ -383,14 +384,14 @@ public:
     }
 
     // fcitx5 はフォーカスが外れたとき、ClientUnfocusCommit を持たない入力先には未確定文字列のうち DontCommit でない部分を確定する。
-    // rinze は未確定文字列をすべて DontCommit にして確定させず、ここで rinzed の入力途中も捨てる
+    // rinze は未確定文字列をすべて DontCommit にして確定させず、ここで rinzed の入力途中を捨てて ASCII モードに戻す
     void deactivate(const fcitx::InputMethodEntry &,
                     fcitx::InputContextEvent &event) override {
         auto *s = state(event.inputContext());
         if (event.type() == fcitx::EventType::InputContextSwitchInputMethod) {
             s->flush();
         } else {
-            s->discard();
+            s->focusOut();
         }
     }
 
@@ -687,13 +688,19 @@ void RinzeState::discard() {
     }
 }
 
+void RinzeState::focusOut() {
+    if (shown_ && (!idle() || mode() != RINZE_MODE_ASCII)) {
+        apply(rinze_client_discard_to(client_.get(), RINZE_MODE_ASCII), false);
+    }
+}
+
 void RinzeState::switchMode(RinzeMode mode) {
     apply(rinze_client_switch_mode(client_.get(), mode));
 }
 
 void RinzeState::connect() {
     if (!shown_) {
-        apply(rinze_client_discard(client_.get()));
+        apply(rinze_client_discard_to(client_.get(), RINZE_MODE_ASCII), false);
     }
 }
 
@@ -712,7 +719,7 @@ void RinzeState::restoreNotice() {
     }
 }
 
-bool RinzeState::apply(RinzeResponse *raw) {
+bool RinzeState::apply(RinzeResponse *raw, bool announce) {
     ResponsePtr response(raw);
     if (!response) {
         const char *message = "";
@@ -740,7 +747,7 @@ bool RinzeState::apply(RinzeResponse *raw) {
     notice_.clear();
     render();
     if (mode() != before) {
-        engine_.modeChanged(ic_, before.has_value());
+        engine_.modeChanged(ic_, announce && before.has_value());
     }
     return handled;
 }

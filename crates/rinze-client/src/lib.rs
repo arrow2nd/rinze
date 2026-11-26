@@ -30,7 +30,6 @@ use rpc::{CallError, Connection};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 // 一度待ち切れなかったあとは、応答が来るまで短く待つ。止まった rinzed に打鍵のたびに長く固まらない
 const STALLED_TIMEOUT: Duration = Duration::from_secs(1);
-const MAX_SWITCH_KEYS: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -149,31 +148,19 @@ impl Client {
         self.call("discard", vec![])
     }
 
+    /// 入力途中のものを確定せずに捨て、入力モードを `target` にする。
+    pub fn discard_to(&mut self, target: Mode) -> Result<Response, Error> {
+        self.call("discard", vec![mode_name(target).into()])
+    }
+
     /// 入力途中のものを表示どおりに確定する。入力モードは変えない。
     pub fn flush(&mut self) -> Result<Response, Error> {
         self.call("flush", vec![])
     }
 
-    /// 入力途中のものを確定してから、モードを切り替えるキーを送って `target` にする。
-    /// 返す応答の `commit` は、途中で確定したものをすべて合わせたもの。
+    /// 入力途中のものを表示どおりに確定し、入力モードを `target` にする。
     pub fn switch_mode(&mut self, target: Mode) -> Result<Response, Error> {
-        let mut response = self.flush()?;
-        let mut commit = std::mem::take(&mut response.commit);
-        for _ in 0..MAX_SWITCH_KEYS {
-            let Some(key) = switch_key(response.mode, target) else {
-                break;
-            };
-            response = match self.call("key", vec![key.into(), "".into()]) {
-                Ok(response) => response,
-                Err(e) => {
-                    self.late_commit.insert_str(0, &commit);
-                    return Err(e);
-                }
-            };
-            commit.push_str(&response.commit);
-        }
-        response.commit = commit;
-        Ok(response)
+        self.call("flush", vec![mode_name(target).into()])
     }
 
     pub fn last_left_context(&self) -> Option<&LeftContext> {
@@ -256,50 +243,12 @@ impl Client {
     }
 }
 
-fn switch_key(current: Mode, target: Mode) -> Option<&'static str> {
-    use Mode::*;
-    Some(match (current, target) {
-        _ if current == target => return None,
-        (Ascii | FullwidthLatin, _) => "ctrl-j",
-        (_, Ascii) => "l",
-        (_, FullwidthLatin) => "L",
-        (_, HalfwidthKatakana) => "ctrl-q",
-        (_, Hiragana | Katakana) => "q",
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn どのモードからどのモードへも切り替えのキーで着く() {
-        use Mode::*;
-        let all = [Hiragana, Katakana, HalfwidthKatakana, Ascii, FullwidthLatin];
-        // docs/usage/modes.md の「入力モード」の表と同じ切り替え
-        let after = |mode: Mode, key: &str| match (mode, key) {
-            (Ascii | FullwidthLatin, "ctrl-j") => Hiragana,
-            (Hiragana, "q") => Katakana,
-            (Katakana | HalfwidthKatakana, "q") => Hiragana,
-            (Hiragana | Katakana, "ctrl-q") => HalfwidthKatakana,
-            (Hiragana | Katakana | HalfwidthKatakana, "l") => Ascii,
-            (Hiragana | Katakana | HalfwidthKatakana, "L") => FullwidthLatin,
-            other => panic!("{other:?} は表に無い"),
-        };
-        for from in all {
-            for to in all {
-                let mut mode = from;
-                let mut keys = Vec::new();
-                while let Some(key) = switch_key(mode, to) {
-                    keys.push(key);
-                    assert!(
-                        keys.len() <= MAX_SWITCH_KEYS,
-                        "{from:?} から {to:?}: {keys:?}"
-                    );
-                    mode = after(mode, key);
-                }
-                assert_eq!(mode, to, "{from:?} から {to:?}: {keys:?}");
-            }
-        }
+fn mode_name(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Hiragana => "hiragana",
+        Mode::Katakana => "katakana",
+        Mode::HalfwidthKatakana => "halfwidth-katakana",
+        Mode::Ascii => "ascii",
+        Mode::FullwidthLatin => "fullwidth-latin",
     }
 }

@@ -3,8 +3,8 @@
 //! メソッド:
 //! - `key(key: string, left_context: string) -> response`
 //!   `key` は 1 文字か `space` `enter` `backspace` `ctrl-g` `ctrl-j` `ctrl-q`。
-//! - `flush() -> response` 入力途中のものを表示どおりに確定する。モードは変えない。
-//! - `discard() -> response` 入力途中のものを確定せずに捨てる。学習にも記録しない。モードは変えない。
+//! - `flush([mode: string]) -> response` 入力途中のものを表示どおりに確定する。`mode` を渡せばそのモードへ切り替え、省けばモードを変えない。
+//! - `discard([mode: string]) -> response` 入力途中のものを確定せずに捨てる。学習にも記録しない。`mode` を渡せばそのモードへ切り替え、省けばモードを変えない。
 //! - `reset() -> response` `flush` したうえで、モードをひらがなに戻す。
 //! - `choose(version: int, word: string, left_context: string) -> response` 見出しの入力中に、その読みの候補 `word` で確定する。
 //!   `version` が最後の応答の版と違うか、`word` が候補に無ければ何もせず `handled` を false で返す。
@@ -476,8 +476,16 @@ fn dispatch(
             let key = parse_key(key.as_str().unwrap_or(""))?;
             session.handle(key, left.as_str().unwrap_or(""), converter)
         }
-        "flush" => session.flush(converter),
-        "discard" => session.discard(),
+        "flush" => match params {
+            [] => session.flush(converter),
+            [mode] => session.flush_to(parse_mode(mode.as_str().unwrap_or(""))?, converter),
+            _ => return Err("flush は引数なし、または (mode) を受け取る".into()),
+        },
+        "discard" => match params {
+            [] => session.discard(),
+            [mode] => session.discard_to(parse_mode(mode.as_str().unwrap_or(""))?),
+            _ => return Err("discard は引数なし、または (mode) を受け取る".into()),
+        },
         "reset" => session.reset(converter),
         "choose" => {
             let [version, word, left] = params else {
@@ -527,6 +535,17 @@ fn parse_key(name: &str) -> Result<Key, String> {
         ("ctrl-q", ..) => Ok(Key::ToggleHalfwidth),
         (_, Some(c), None) => Ok(Key::Char(c)),
         _ => Err(format!("未知のキー: {name}")),
+    }
+}
+
+fn parse_mode(name: &str) -> Result<Mode, String> {
+    match name {
+        "hiragana" => Ok(Mode::Hiragana),
+        "katakana" => Ok(Mode::Katakana),
+        "halfwidth-katakana" => Ok(Mode::HalfwidthKatakana),
+        "ascii" => Ok(Mode::Ascii),
+        "fullwidth-latin" => Ok(Mode::FullwidthLatin),
+        _ => Err(format!("未知のモード: {name}")),
     }
 }
 
