@@ -117,6 +117,10 @@ pub trait Converter {
     /// 候補を確定した。確定のしかた (Enter、次の文字、一覧からの選択、モードの切り替え、flush、辞書登録など) によらず、
     /// 確定した文字列に候補を含めるたびに 1 回呼ぶ。`word` は送りがなを含まない。
     fn committed(&mut self, midashi: &Midashi, word: &str, pick: Pick);
+    /// 候補の辞書注釈を返す。注釈が無い場合や生成候補は None。
+    fn annotation(&self, _midashi: &Midashi, _word: &str) -> Option<String> {
+        None
+    }
 }
 
 /// 確定した候補が、変換を始めたときに最初に出した候補だったか。
@@ -133,6 +137,8 @@ pub struct Response {
     pub handled: bool,
     pub commit: String,
     pub preedit: String,
+    /// インライン変換中に表示している候補の注釈。候補一覧の表示中や変換中でないときは None。
+    pub annotation: Option<String>,
     /// 入力中の階層 (辞書登録中ならいちばん内側の入力欄) の候補一覧。
     pub candidates: Option<CandidatePage>,
     /// 辞書登録の入力欄か、辞書から消すかの問いがあるときだけ、いちばん内側のもの。
@@ -161,9 +167,19 @@ pub struct Minibuffer {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateItem {
+    /// 選択キー。
+    pub label: char,
+    /// 送りがなを含めた候補。
+    pub word: String,
+    /// 辞書注釈。無い場合は None。
+    pub annotation: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidatePage {
-    /// 選択キーと、送りがなを含めた候補。
-    pub items: Vec<(char, String)>,
+    /// 選択キーと、送りがなを含めた候補・注釈。
+    pub items: Vec<CandidateItem>,
     pub page: usize,
     pub pages: usize,
 }
@@ -361,14 +377,14 @@ impl Session {
         if let Some(mode) = step.next_mode {
             self.input = Input::new(mode);
         }
-        self.response(handled, step.commit)
+        self.response(handled, step.commit, Some(converter))
     }
 
     /// 入力途中のものを表示どおりに確定し、状態を空にする。モードは変えない。フロントエンドが入力先を離れるときに使う。
     pub fn flush(&mut self, converter: &mut dyn Converter) -> Response {
         self.version += 1;
         let commit = self.take_pending(converter);
-        self.response(true, commit)
+        self.response(true, commit, Some(converter))
     }
 
     /// 入力途中のものを確定せずに捨て、状態を空にする。モードは変えず、辞書登録中なら外側のモードに戻る。
@@ -378,7 +394,7 @@ impl Session {
         if let Input::Kana(kana) = &mut self.input {
             kana.phase = Phase::default();
         }
-        self.response(true, String::new())
+        self.response(true, String::new(), None)
     }
 
     /// [`Session::flush`] したうえで、モードを始めのひらがなに戻す。フロントエンドが入力を有効にしたときに使う。
@@ -386,7 +402,7 @@ impl Session {
         self.version += 1;
         let commit = self.take_pending(converter);
         self.input = Input::default();
-        self.response(true, commit)
+        self.response(true, commit, Some(converter))
     }
 
     /// 見出しの入力中 (▽) に、[`Response::reading`] の候補から `word` を選んで確定する。Space で変換して `word` まで送って確定したのと同じに扱う。
@@ -412,7 +428,7 @@ impl Session {
             Input::Kana(kana) if fresh => kana.choose(word, &mut step),
             _ => false,
         };
-        self.response(chosen, step.commit)
+        self.response(chosen, step.commit, Some(converter))
     }
 
     fn take_pending(&mut self, converter: &mut dyn Converter) -> String {
@@ -429,12 +445,18 @@ impl Session {
         step.commit
     }
 
-    fn response(&self, handled: bool, commit: String) -> Response {
+    fn response(
+        &self,
+        handled: bool,
+        commit: String,
+        converter: Option<&dyn Converter>,
+    ) -> Response {
         Response {
             handled,
             commit,
             preedit: self.preedit(),
-            candidates: self.page(),
+            annotation: self.annotation(converter),
+            candidates: self.page(converter),
             minibuffer: self.minibuffer(1),
             mode: self.mode(),
             passthrough: matches!(self.input, Input::Latin(Latin::Ascii)),
@@ -471,11 +493,18 @@ impl Session {
         kana.minibuffer(depth)
     }
 
-    fn page(&self) -> Option<CandidatePage> {
+    fn annotation(&self, converter: Option<&dyn Converter>) -> Option<String> {
         let Input::Kana(kana) = &self.input else {
             return None;
         };
-        kana.page()
+        kana.annotation(converter)
+    }
+
+    fn page(&self, converter: Option<&dyn Converter>) -> Option<CandidatePage> {
+        let Input::Kana(kana) = &self.input else {
+            return None;
+        };
+        kana.page(converter)
     }
 }
 
@@ -1095,10 +1124,21 @@ impl KanaInput {
         }
     }
 
-    fn page(&self) -> Option<CandidatePage> {
+    fn annotation(&self, converter: Option<&dyn Converter>) -> Option<String> {
+        match &self.phase {
+            Phase::Henkan { conv, .. } => {
+                let word = conv.inline_word()?;
+                converter?.annotation(&conv.midashi, word)
+            }
+            Phase::Register { reg, .. } => reg.inner.annotation(converter),
+            _ => None,
+        }
+    }
+
+    fn page(&self, converter: Option<&dyn Converter>) -> Option<CandidatePage> {
         let conv = match &self.phase {
             Phase::Henkan { conv, .. } => conv,
-            Phase::Register { reg, .. } => return reg.inner.page(),
+            Phase::Register { reg, .. } => return reg.inner.page(converter),
             _ => return None,
         };
         let Cursor::Page(page) = conv.cursor else {
@@ -1108,7 +1148,11 @@ impl KanaInput {
             .page_words(page)
             .iter()
             .zip(PAGE_LABELS)
-            .map(|(word, label)| (label, conv.midashi.surface(word, self.script)))
+            .map(|(word, label)| CandidateItem {
+                label,
+                word: conv.midashi.surface(word, self.script),
+                annotation: converter.and_then(|c| c.annotation(&conv.midashi, word)),
+            })
             .collect();
         Some(CandidatePage {
             items,

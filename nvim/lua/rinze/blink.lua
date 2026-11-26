@@ -195,6 +195,42 @@ function source:enabled()
   return midashi ~= nil
 end
 
+local function parse_entry(entry)
+  if type(entry) ~= 'table' then
+    return entry, nil
+  end
+  local note = entry[2]
+  if note == nil or note == vim.NIL or note == '' then
+    return entry[1], nil
+  end
+  return entry[1], note
+end
+
+local function make_item(entry, index, total, ctx, version)
+  local word, note = parse_entry(entry)
+  local function cursor()
+    return { line = ctx.cursor[1] - 1, character = ctx.cursor[2] }
+  end
+  local item = {
+    label = word,
+    kind = require('blink.cmp.types').CompletionItemKind.Text,
+    -- メニューの絞り込みはカーソル前のバッファの文字 (キーワード) で行われ、見出しは virt_text で含まれないので、
+    -- どの項目もキーワードに一致させて残す
+    filterText = ctx.get_keyword(),
+    -- 並びは rinzed が返した順にする。sortText だけでは受け入れ履歴 (frecency) で入れ替わる
+    sortText = string.format('%04d', index),
+    score_offset = (total - index) * 100,
+    -- start と end を同じ表にすると、blink.cmp が仮挿入を取り消す範囲を求めるときに両方が書き換わる
+    textEdit = { newText = word, range = { start = cursor(), ['end'] = cursor() } },
+    data = { word = word, version = version },
+  }
+  if note then
+    item.labelDetails = { description = note }
+    item.documentation = { kind = 'plaintext', value = note }
+  end
+  return item
+end
+
 function source:get_completions(ctx, callback)
   local asked = midashi
   if not asked then
@@ -206,24 +242,10 @@ function source:get_completions(ctx, callback)
     if cancelled or midashi ~= asked then
       return
     end
-    local function cursor()
-      return { line = ctx.cursor[1] - 1, character = ctx.cursor[2] }
-    end
     local items = {}
-    for i, word in ipairs(words or {}) do
-      items[i] = {
-        label = word,
-        kind = require('blink.cmp.types').CompletionItemKind.Text,
-        -- メニューの絞り込みはカーソル前のバッファの文字 (キーワード) で行われ、見出しは virt_text で含まれないので、
-        -- どの項目もキーワードに一致させて残す
-        filterText = ctx.get_keyword(),
-        -- 並びは rinzed が返した順にする。sortText だけでは受け入れ履歴 (frecency) で入れ替わる
-        sortText = string.format('%04d', i),
-        score_offset = (#words - i) * 100,
-        -- start と end を同じ表にすると、blink.cmp が仮挿入を取り消す範囲を求めるときに両方が書き換わる
-        textEdit = { newText = word, range = { start = cursor(), ['end'] = cursor() } },
-        data = { word = word, version = asked.version },
-      }
+    local list = words or {}
+    for i, entry in ipairs(list) do
+      items[i] = make_item(entry, i, #list, ctx, asked.version)
     end
     callback({ items = items, is_incomplete_forward = true, is_incomplete_backward = true })
   end)

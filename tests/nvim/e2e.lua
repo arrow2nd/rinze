@@ -87,13 +87,25 @@ check(
   snaps[1].preedit,
   '▼マヨネーズ'
 )
-check('Mayone-zu<Space>woAE の途中', snaps[2], { preedit = '▼和え', buffer = 'マヨネーズを' })
+check(
+  'Mayone-zu<Space>woAE の途中',
+  { preedit = snaps[2].preedit, buffer = snaps[2].buffer },
+  { preedit = '▼和え', buffer = 'マヨネーズを' }
+)
 check('Mayone-zu<Space>woAEmasu のバッファ', text, 'マヨネーズを和えます')
 
 text, snaps = type_in_new_buffer('koredeAT' .. snapshot .. 't' .. snapshot .. '<Space>' .. snapshot .. 'eimasuka?')
 check('koredeAT の途中', snaps[1], { preedit = '▽あ*t', buffer = 'これで' })
-check('koredeATt の途中', snaps[2], { preedit = '▼会っt', buffer = 'これで' })
-check('<Space> で 2 番目の候補', snaps[3], { preedit = '▼合っt', buffer = 'これで' })
+check(
+  'koredeATt の途中',
+  { preedit = snaps[2].preedit, buffer = snaps[2].buffer, has_note = snaps[2].list ~= nil },
+  { preedit = '▼会っt', buffer = 'これで', has_note = true }
+)
+check(
+  '<Space> で 2 番目の候補',
+  { preedit = snaps[3].preedit, buffer = snaps[3].buffer, has_note = snaps[3].list ~= nil },
+  { preedit = '▼合っt', buffer = 'これで', has_note = true }
+)
 check('koredeATteimasuka? のバッファ', text, 'これで合っていますか？')
 
 local function in_history(prefix)
@@ -123,11 +135,15 @@ check('最初の候補をそのまま確定しても履歴に書かない', in_h
 _, snaps =
   type_in_new_buffer('Kanji<Space><Space><Space><Space>' .. snapshot .. '<Space>' .. snapshot .. 'a' .. snapshot)
 print('一覧の表示: ' .. vim.inspect(snaps))
-check('4 回目の Space まではその場に出す', snaps[1].list, nil)
+check(
+  '4 回目の Space まではその場に出す',
+  snaps[1].list and snaps[1].list:match('^a:') ~= nil or false,
+  false
+)
 check('5 回目の Space で一覧を出す', snaps[2].list and snaps[2].list:match('^a:') ~= nil, true)
 check(
   '一覧の a で確定し一覧を閉じる',
-  { snaps[3].list, snaps[3].preedit, snaps[3].buffer == snaps[2].list:match('^a:(%S+)') },
+  { snaps[3].list, snaps[3].preedit, snaps[3].buffer == snaps[2].list:match('^a:%s*(%S+)') },
   { nil, '', true }
 )
 

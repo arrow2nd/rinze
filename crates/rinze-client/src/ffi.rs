@@ -77,7 +77,8 @@ pub struct RinzeResponse {
     response: Response,
     commit: CString,
     preedit: CString,
-    candidates: Vec<(CString, CString)>,
+    annotation: CString,
+    candidates: Vec<(CString, CString, CString)>,
     minibuffer: Option<[CString; 3]>,
 }
 
@@ -122,11 +123,18 @@ impl From<Response> for RinzeResponse {
         RinzeResponse {
             commit: c(&response.commit),
             preedit: c(&response.preedit),
+            annotation: c(response.annotation.as_deref().unwrap_or("")),
             candidates: response
                 .candidates
                 .iter()
                 .flat_map(|page| &page.items)
-                .map(|(label, word)| (c(&label.to_string()), c(word)))
+                .map(|item| {
+                    (
+                        c(&item.label.to_string()),
+                        c(&item.word),
+                        c(item.annotation.as_deref().unwrap_or("")),
+                    )
+                })
                 .collect(),
             minibuffer: response
                 .minibuffer
@@ -389,6 +397,14 @@ pub unsafe extern "C" fn rinze_response_preedit(response: *const RinzeResponse) 
     read(response, EMPTY.as_ptr(), |r| r.preedit.as_ptr())
 }
 
+/// インライン変換中に表示している候補の辞書注釈。無ければ空文字列。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rinze_response_annotation(
+    response: *const RinzeResponse,
+) -> *const c_char {
+    read(response, EMPTY.as_ptr(), |r| r.annotation.as_ptr())
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rinze_response_mode(response: *const RinzeResponse) -> RinzeMode {
     read(response, RinzeMode::Hiragana, |r| r.response.mode.into())
@@ -409,7 +425,7 @@ pub unsafe extern "C" fn rinze_response_candidate_label(
     read(response, EMPTY.as_ptr(), |r| {
         r.candidates
             .get(index)
-            .map_or(EMPTY.as_ptr(), |(label, _)| label.as_ptr())
+            .map_or(EMPTY.as_ptr(), |(label, _, _)| label.as_ptr())
     })
 }
 
@@ -422,7 +438,20 @@ pub unsafe extern "C" fn rinze_response_candidate_word(
     read(response, EMPTY.as_ptr(), |r| {
         r.candidates
             .get(index)
-            .map_or(EMPTY.as_ptr(), |(_, word)| word.as_ptr())
+            .map_or(EMPTY.as_ptr(), |(_, word, _)| word.as_ptr())
+    })
+}
+
+/// 候補の辞書注釈。無いか範囲の外なら空文字列。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rinze_response_candidate_annotation(
+    response: *const RinzeResponse,
+    index: usize,
+) -> *const c_char {
+    read(response, EMPTY.as_ptr(), |r| {
+        r.candidates
+            .get(index)
+            .map_or(EMPTY.as_ptr(), |(_, _, note)| note.as_ptr())
     })
 }
 

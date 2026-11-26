@@ -296,7 +296,7 @@ type_keys('a' .. S .. '<Esc>')
 check(
   '一覧の a で選んだ候補をコマンドラインに確定する',
   { snap(3).cmdline, snap(3).floats },
-  { list:match('^a:(%S+)'), {} }
+  { list:match('^a:%s*(%S+)'), {} }
 )
 
 lua('T.fresh()')

@@ -23,8 +23,15 @@ impl Mode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateItem {
+    pub label: char,
+    pub word: String,
+    pub annotation: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidatePage {
-    pub items: Vec<(char, String)>,
+    pub items: Vec<CandidateItem>,
     pub page: usize,
     pub pages: usize,
 }
@@ -42,6 +49,7 @@ pub struct Response {
     pub handled: bool,
     pub commit: String,
     pub preedit: String,
+    pub annotation: Option<String>,
     pub candidates: Option<CandidatePage>,
     pub minibuffer: Option<Minibuffer>,
     pub mode: Mode,
@@ -102,10 +110,19 @@ impl Response {
                 })
             }
         };
+        let annotation = match field(map, "annotation") {
+            None => None,
+            Some(v) => Some(
+                v.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| "annotation が文字列でない".to_string())?,
+            ),
+        };
         Ok(Response {
             handled: flag(map, "handled"),
             commit: string(map, "commit")?,
             preedit: string(map, "preedit")?,
+            annotation,
             candidates,
             minibuffer,
             mode,
@@ -125,21 +142,45 @@ impl CandidatePage {
             .and_then(Value::as_array)
             .ok_or("candidates.items が配列でない")?
             .iter()
-            .map(|item| match item.as_array().map(Vec::as_slice) {
-                Some([label, word]) => {
-                    let mut label = label.as_str().unwrap_or_default().chars();
-                    match (label.next(), label.next(), word.as_str()) {
-                        (Some(label), None, Some(word)) => Ok((label, word.to_string())),
-                        _ => Err("候補の選択キーが 1 文字でない"),
-                    }
-                }
-                _ => Err("候補が [選択キー, 候補] でない"),
-            })
+            .map(parse_candidate_item)
             .collect::<Result<_, _>>()?;
         Ok(CandidatePage {
             items,
             page: number(map, "page")? as usize,
             pages: number(map, "pages")? as usize,
         })
+    }
+}
+
+fn parse_candidate_item(item: &Value) -> Result<CandidateItem, String> {
+    let slice = item
+        .as_array()
+        .map(Vec::as_slice)
+        .ok_or("候補が配列でない")?;
+    let (label, word, annotation) = match slice {
+        [label, word] => (label, word, None),
+        [label, word, annotation] => {
+            let annotation = if annotation.is_nil() {
+                None
+            } else {
+                Some(
+                    annotation
+                        .as_str()
+                        .ok_or("候補の注釈が文字列でない")?
+                        .to_string(),
+                )
+            };
+            (label, word, annotation)
+        }
+        _ => return Err("候補が [選択キー, 候補, 注釈?] でない".into()),
+    };
+    let mut chars = label.as_str().unwrap_or_default().chars();
+    match (chars.next(), chars.next(), word.as_str()) {
+        (Some(label), None, Some(word)) => Ok(CandidateItem {
+            label,
+            word: word.to_string(),
+            annotation,
+        }),
+        _ => Err("候補の選択キーが 1 文字でない".into()),
     }
 }

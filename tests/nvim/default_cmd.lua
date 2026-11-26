@@ -19,7 +19,10 @@ check('cmd を省いても PATH の rinzed を起動して有効になる', { ok
 check('有効にした直後はひらがなモード', rinze.mode(), 'hiragana')
 
 local chan = vim.fn.sockconnect('pipe', require('rinze.socket').default(), { rpc = true })
-local words = vim.rpcrequest(chan, 'lookup', 'たなか', '')
+local entries = vim.rpcrequest(chan, 'lookup', 'たなか', '')
+local words = vim.tbl_map(function(entry)
+  return type(entry) == 'table' and entry[1] or entry
+end, entries)
 check('既定の辞書の L の語が出る', vim.tbl_contains(words, '田仲'), true)
 check('既定の辞書の geo の語も出る', vim.tbl_contains(words, '田中町'), true)
 

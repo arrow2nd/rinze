@@ -167,6 +167,11 @@ impl Dictionary {
             .find(|written| word_of(written) == word)
     }
 
+    /// 候補 `word` の注釈 (`;` 以降)。空や `*` で始まる内部コメントは None。
+    pub fn annotation(&self, key: &str, word: &str) -> Option<&str> {
+        self.written(key, word).and_then(annotation_of)
+    }
+
     /// 見出しの行の `(skk-ignore-dic-word ...)` に書かれた語 (注釈を除く)。
     pub fn ignored(&self, key: &str) -> &[String] {
         self.ignored.get(key).map_or(&[], Vec::as_slice)
@@ -346,6 +351,11 @@ fn word_of(written: &str) -> &str {
     written.split(';').next().unwrap_or("")
 }
 
+fn annotation_of(written: &str) -> Option<&str> {
+    let (_, note) = written.split_once(';')?;
+    (!note.is_empty() && !note.starts_with('*')).then_some(note)
+}
+
 struct Line<'a> {
     written: Vec<&'a str>,
     ignored: Vec<String>,
@@ -495,10 +505,14 @@ mod tests {
 
     #[test]
     fn 注釈つきの候補は辞書での書き方を引ける() {
-        let dict = Dictionary::parse("あした /明日/晨;あさ/\n");
+        let dict = Dictionary::parse("あした /明日/晨;あさ/朝;*内部メモ/翌;/旦;あさ;よあけ/\n");
         assert_eq!(dict.written("あした", "晨"), Some("晨;あさ"));
         assert_eq!(dict.written("あした", "明日"), Some("明日"));
-        assert_eq!(dict.written("あした", "朝"), None);
+        assert_eq!(dict.annotation("あした", "晨"), Some("あさ"));
+        assert_eq!(dict.annotation("あした", "旦"), Some("あさ;よあけ"));
+        assert_eq!(dict.annotation("あした", "明日"), None);
+        assert_eq!(dict.annotation("あした", "朝"), None);
+        assert_eq!(dict.annotation("あした", "翌"), None);
     }
 
     #[test]

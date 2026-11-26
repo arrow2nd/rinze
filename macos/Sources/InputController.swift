@@ -222,9 +222,9 @@ final class RinzeInputController: IMKInputController {
             return
         }
 
-        var lines: [String] = []
+        var lines: [PanelLine] = []
         if !notice.isEmpty {
-            lines.append("rinze: \(notice)")
+            lines.append(PanelLine("rinze: \(notice)"))
         }
         if let shown {
             var prompt: UnsafePointer<CChar>?
@@ -234,23 +234,34 @@ final class RinzeInputController: IMKInputController {
                 let prompt, let text, let typing
             {
                 lines.append(
-                    String(cString: prompt) + String(cString: text) + String(cString: typing))
+                    PanelLine(
+                        String(cString: prompt) + String(cString: text) + String(cString: typing)))
             }
             let count = rinze_response_candidate_count(shown)
             for index in 0..<count {
                 let label = String(cString: rinze_response_candidate_label(shown, index))
                 let word = String(cString: rinze_response_candidate_word(shown, index))
-                lines.append("\(label): \(word)")
+                let note = String(cString: rinze_response_candidate_annotation(shown, index))
+                lines.append(
+                    PanelLine("\(label): \(word)", note: note.isEmpty ? nil : note))
             }
             if count > 0 {
-                lines.append("[\(rinze_response_page(shown) + 1)/\(rinze_response_pages(shown))]")
+                lines.append(
+                    PanelLine(
+                        "[\(rinze_response_page(shown) + 1)/\(rinze_response_pages(shown))]",
+                        secondary: true))
+            } else {
+                let note = String(cString: rinze_response_annotation(shown))
+                if !note.isEmpty {
+                    lines.append(PanelLine(note, secondary: true))
+                }
             }
         }
         if lines.isEmpty && !modeFlash.isEmpty {
-            lines.append(modeFlash)
+            lines.append(PanelLine(modeFlash))
         }
         if Service.shared.debug && !diagnosis.isEmpty {
-            lines.append(diagnosis)
+            lines.append(PanelLine(diagnosis, secondary: true))
         }
         Panel.shared.show(lines: lines, below: cursorRect(client), owner: self)
     }

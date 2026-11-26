@@ -109,6 +109,9 @@ const char *rinze_response_commit(const RinzeResponse *response);
 
 const char *rinze_response_preedit(const RinzeResponse *response);
 
+// インライン変換中に表示している候補の辞書注釈。無ければ空文字列。
+const char *rinze_response_annotation(const RinzeResponse *response);
+
 RinzeMode rinze_response_mode(const RinzeResponse *response);
 
 // 候補一覧を表示していなければ 0。
@@ -120,6 +123,9 @@ const char *rinze_response_candidate_label(const RinzeResponse *response,
 
 // 送りがなを含めた候補。範囲の外なら空文字列。
 const char *rinze_response_candidate_word(const RinzeResponse *response, size_t index);
+
+// 候補の辞書注釈。無いか範囲の外なら空文字列。
+const char *rinze_response_candidate_annotation(const RinzeResponse *response, size_t index);
 
 // 表示中のページ (0 から)。
 size_t rinze_response_page(const RinzeResponse *response);

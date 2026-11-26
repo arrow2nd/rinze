@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use rinze_engine::{
-    CandidatePage, Converter, Key, Midashi, Minibuffer, Mode, Okuri, Pick, Query, Response, Session,
+    CandidateItem, CandidatePage, Converter, Key, Midashi, Minibuffer, Mode, Okuri, Pick, Query,
+    Response, Session,
 };
 
 #[derive(Debug, PartialEq)]
@@ -42,6 +43,7 @@ struct Table {
     registered: Vec<Registered>,
     purged: Vec<Registered>,
     committed: Vec<(String, String, Pick)>,
+    annotations: HashMap<(String, String), String>,
 }
 
 fn table(entries: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
@@ -68,6 +70,14 @@ impl Table {
 
     fn generating(mut self, generated: &[(&str, &[&str])]) -> Self {
         self.generated = table(generated);
+        self
+    }
+
+    fn annotating(mut self, notes: &[(&str, &str, &str)]) -> Self {
+        self.annotations = notes
+            .iter()
+            .map(|(k, w, n)| ((k.to_string(), w.to_string()), n.to_string()))
+            .collect();
         self
     }
 }
@@ -108,6 +118,12 @@ impl Converter for Table {
 
     fn committed(&mut self, midashi: &Midashi, word: &str, pick: Pick) {
         self.committed.push((midashi.key(), word.to_string(), pick));
+    }
+
+    fn annotation(&self, midashi: &Midashi, word: &str) -> Option<String> {
+        self.annotations
+            .get(&(midashi.key(), word.to_string()))
+            .cloned()
     }
 }
 
@@ -368,7 +384,11 @@ fn 四回目までその場に出し五回目から一覧にする() {
             ('k', "患児"),
             ('l', "幹二")
         ]
-        .map(|(l, w)| (l, w.to_string()))
+        .map(|(label, word)| CandidateItem {
+            label,
+            word: word.to_string(),
+            annotation: None,
+        })
     );
 
     ed.type_keys("<Space>");
@@ -408,7 +428,18 @@ fn 送りありは変換開始が一件目になる() {
     let page = ed.page().unwrap();
     assert_eq!(
         page.items,
-        [('a', "逢っ".to_string()), ('s', "在っ".to_string())]
+        [
+            CandidateItem {
+                label: 'a',
+                word: "逢っ".to_string(),
+                annotation: None,
+            },
+            CandidateItem {
+                label: 's',
+                word: "在っ".to_string(),
+                annotation: None,
+            },
+        ]
     );
     assert_eq!(ed.preedit(), "▼あっt");
     ed.type_keys("se");
@@ -497,7 +528,14 @@ fn 一覧の最後のページに空きがあれば生成した表記をその�
     ed.type_keys("<Space>");
     let page = ed.page().unwrap();
     assert_eq!((page.page, page.pages), (0, 1));
-    assert_eq!(page.items[2], ('d', "カンジ".to_string()));
+    assert_eq!(
+        page.items[2],
+        CandidateItem {
+            label: 'd',
+            word: "カンジ".to_string(),
+            annotation: None,
+        }
+    );
 }
 
 #[test]
@@ -854,7 +892,11 @@ fn 半角カナモードでも変換でき_送りがなは半角カナで確定�
     ed.type_keys("<Space><Space><Space><Space>");
     assert_eq!(
         ed.page().unwrap().items,
-        [('a', "逢ｯ".to_string())],
+        [CandidateItem {
+            label: 'a',
+            word: "逢ｯ".to_string(),
+            annotation: None,
+        }],
         "一覧の候補にも半角カナの送りがなを付ける"
     );
     assert_eq!(ed.preedit(), "▼ｱｯt");
@@ -1660,4 +1702,24 @@ fn 辞書登録の入れ子は上限で止まりスタックをあふれさせ�
 
     let res = ed.discard();
     assert!(res.minibuffer.is_none());
+}
+
+#[test]
+fn インライン変換と候補一覧で辞書注釈を返す() {
+    let mut ed = Editor::new(
+        Table::new(&[("あした", &["明日", "朝", "晨", "旦", "翌", "明"])])
+            .annotating(&[("あした", "晨", "あさ"), ("あした", "翌", "つぎの日")]),
+    );
+    ed.type_keys("Asita<Space>");
+    assert_eq!(ed.last.annotation.as_deref(), None);
+    ed.type_keys("<Space><Space>");
+    assert_eq!(ed.preedit(), "▼晨");
+    assert_eq!(ed.last.annotation.as_deref(), Some("あさ"));
+    ed.type_keys("<Space><Space>");
+    assert_eq!(ed.last.annotation, None, "一覧表示中はインライン注釈を消す");
+    let page = ed.page().unwrap();
+    assert_eq!(page.items[0].word, "翌");
+    assert_eq!(page.items[0].annotation.as_deref(), Some("つぎの日"));
+    assert_eq!(page.items[1].word, "明");
+    assert_eq!(page.items[1].annotation, None);
 }

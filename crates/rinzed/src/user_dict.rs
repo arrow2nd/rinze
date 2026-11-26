@@ -41,6 +41,10 @@ impl UserDictionary {
         self.dict.lookup(key)
     }
 
+    pub fn annotation(&self, key: &str, word: &str) -> Option<&str> {
+        self.dict.annotation(key, word)
+    }
+
     /// 消してあり、システム辞書や生成した表記から取らない語。
     pub fn ignored(&self, key: &str) -> &[String] {
         self.dict.ignored(key)

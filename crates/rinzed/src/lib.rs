@@ -359,6 +359,14 @@ impl Backend {
         }
     }
 
+    pub fn annotation(&self, midashi: &Midashi, word: &str) -> Option<String> {
+        let key = midashi.key();
+        self.user()
+            .annotation(&key, word)
+            .map(str::to_string)
+            .or_else(|| self.dict.annotation(&key, word).map(str::to_string))
+    }
+
     /// 最初に出した候補をそのまま確定したときと、辞書の候補でない語 (生成した表記) は、並べ替えに使わないので記録しない。
     pub fn committed(&self, midashi: &Midashi, word: &str, pick: Pick) {
         if pick == Pick::First || matches!(self.learning, Learning::Off) {
@@ -409,6 +417,10 @@ impl Converter for SharedConverter<'_> {
 
     fn committed(&mut self, midashi: &Midashi, word: &str, pick: Pick) {
         self.0.committed(midashi, word, pick)
+    }
+
+    fn annotation(&self, midashi: &Midashi, word: &str) -> Option<String> {
+        self.0.annotation(midashi, word)
     }
 }
 
@@ -488,7 +500,16 @@ fn dispatch(
                 midashi: &midashi,
             };
             let words = backend.candidates(&query);
-            return Ok(Value::Array(words.into_iter().map(Value::from).collect()));
+            let items = words
+                .into_iter()
+                .map(|word| {
+                    let note = backend
+                        .annotation(&midashi, &word)
+                        .map_or(Value::Nil, Value::from);
+                    Value::Array(vec![Value::from(word), note])
+                })
+                .collect();
+            return Ok(Value::Array(items));
         }
         _ => return Err(format!("未知のメソッド: {method}")),
     };
@@ -524,7 +545,13 @@ fn encode_response(r: &Response) -> Value {
         let items = page
             .items
             .iter()
-            .map(|(label, word)| Value::Array(vec![label.to_string().into(), word.as_str().into()]))
+            .map(|item| {
+                Value::Array(vec![
+                    item.label.to_string().into(),
+                    item.word.as_str().into(),
+                    item.annotation.as_deref().map_or(Value::Nil, Value::from),
+                ])
+            })
             .collect();
         Value::Map(vec![
             ("items".into(), Value::Array(items)),
@@ -543,6 +570,10 @@ fn encode_response(r: &Response) -> Value {
         ("handled".into(), r.handled.into()),
         ("commit".into(), r.commit.as_str().into()),
         ("preedit".into(), r.preedit.as_str().into()),
+        (
+            "annotation".into(),
+            r.annotation.as_deref().map_or(Value::Nil, Value::from),
+        ),
         ("candidates".into(), candidates),
         ("minibuffer".into(), minibuffer),
         ("mode".into(), mode_name(r.mode).into()),
@@ -673,6 +704,16 @@ mod tests {
         let mayo = kana("まよねーず", None);
         user.purge(&mayo, "マヨネーズ", &dict).unwrap();
         assert_eq!(user.ignored("まよねーず"), ["マヨネーズ"]);
+    }
+
+    #[test]
+    fn 辞書の注釈を引けて_アスタリスク始まりは返さない() {
+        let dict = Dictionary::parse("あした /明日/晨;あさ/朝;*内部/\n");
+        let backend = Backend::new(dict, UserDictionary::in_memory(), None, Learning::Off);
+        let asita = kana("あした", None);
+        assert_eq!(backend.annotation(&asita, "晨").as_deref(), Some("あさ"));
+        assert_eq!(backend.annotation(&asita, "明日"), None);
+        assert_eq!(backend.annotation(&asita, "朝"), None);
     }
 
     #[test]

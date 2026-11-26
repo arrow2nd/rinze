@@ -129,9 +129,10 @@ local function converted_order(line, reading_keys)
   local order = {}
   local _, snaps = type_into(line, reading_keys .. string.rep('<Space>' .. snap, 12) .. '<C-g><C-g>')
   for _, s in ipairs(snaps) do
-    if s.list then
-      for word in s.list:gmatch('%a:(%S+)') do
-        if not vim.tbl_contains(order, word) then
+    if s.list and s.list:match('^a:') then
+      for _, row in ipairs(vim.split(s.list, '\n', { plain = true })) do
+        local word = row:match('^%a:%s*(%S+)')
+        if word and not vim.tbl_contains(order, word) then
           table.insert(order, word)
         end
       end

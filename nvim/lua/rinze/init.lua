@@ -25,6 +25,7 @@ local ns = vim.api.nvim_create_namespace('rinze')
 local EXIT_ANOTHER_RINZED_SERVES = 0
 local STDERR_MAX_LINES = 4
 local MAX_LEFT_CONTEXT_CHARS = 40
+local MAX_ANNOTATION_WIDTH = 48
 
 local function socket_path()
   return config.socket or require('rinze.socket').default()
@@ -140,18 +141,66 @@ local function present(v)
   return v ~= nil and v ~= vim.NIL
 end
 
-local function show_float(session, minibuffer, candidates)
+local function truncate_width(text, max_width)
+  if vim.fn.strdisplaywidth(text) <= max_width then
+    return text
+  end
+  local out = ''
+  local width = 0
+  local total = vim.fn.strchars(text)
+  for i = 0, total - 1 do
+    local ch = vim.fn.strcharpart(text, i, 1)
+    local w = vim.fn.strdisplaywidth(ch)
+    if width + w > max_width - 1 then
+      break
+    end
+    out = out .. ch
+    width = width + w
+  end
+  return out .. '…'
+end
+
+local function append_candidate_lines(lines, highlights, candidates)
+  local max_word_width = 0
+  for _, item in ipairs(candidates.items) do
+    max_word_width = math.max(max_word_width, vim.fn.strdisplaywidth(item[2]))
+  end
+  for _, item in ipairs(candidates.items) do
+    local prefix = item[1] .. ': ' .. item[2]
+    local note = item[3]
+    if present(note) and note ~= '' then
+      local pad = string.rep(' ', max_word_width - vim.fn.strdisplaywidth(item[2]) + 2)
+      local shown_note = truncate_width(note, MAX_ANNOTATION_WIDTH)
+      local line = prefix .. pad .. shown_note
+      table.insert(lines, line)
+      table.insert(highlights, { #lines - 1, #prefix + #pad, #line })
+    else
+      table.insert(lines, prefix)
+    end
+  end
+  local page_line = string.format('[%d/%d]', candidates.page + 1, candidates.pages)
+  table.insert(lines, page_line)
+  table.insert(highlights, { #lines - 1, 0, #page_line })
+end
+
+local function build_float_content(minibuffer, candidates, annotation)
   local lines = {}
+  local highlights = {}
   if present(minibuffer) then
     table.insert(lines, minibuffer.prompt .. minibuffer.text .. minibuffer.preedit)
   end
   if present(candidates) then
-    local parts = {}
-    for _, item in ipairs(candidates.items) do
-      table.insert(parts, item[1] .. ':' .. item[2])
-    end
-    table.insert(lines, table.concat(parts, '  ') .. string.format('  [%d/%d]', candidates.page + 1, candidates.pages))
+    append_candidate_lines(lines, highlights, candidates)
+  elseif present(annotation) and annotation ~= '' then
+    local shown_note = truncate_width(annotation, MAX_ANNOTATION_WIDTH)
+    table.insert(lines, shown_note)
+    table.insert(highlights, { #lines - 1, 0, #shown_note })
   end
+  return lines, highlights
+end
+
+local function show_float(session, minibuffer, candidates, annotation)
+  local lines, highlights = build_float_content(minibuffer, candidates, annotation)
   if #lines == 0 then
     close_float(session)
     return
@@ -160,6 +209,13 @@ local function show_float(session, minibuffer, candidates)
     session.float_buf = vim.api.nvim_create_buf(false, true)
   end
   vim.api.nvim_buf_set_lines(session.float_buf, 0, -1, false, lines)
+  vim.api.nvim_buf_clear_namespace(session.float_buf, ns, 0, -1)
+  for _, hl in ipairs(highlights) do
+    vim.api.nvim_buf_set_extmark(session.float_buf, ns, hl[1], hl[2], {
+      end_col = hl[3],
+      hl_group = 'RinzeAnnotation',
+    })
+  end
   local width = 1
   for _, line in ipairs(lines) do
     width = math.max(width, vim.fn.strdisplaywidth(line))
@@ -319,7 +375,7 @@ end
 local function show(session, res, left_after_commit)
   session.preedit = res.preedit
   session.surface.show_preedit(session, res.preedit)
-  show_float(session, res.minibuffer, res.candidates)
+  show_float(session, res.minibuffer, res.candidates, res.annotation)
   session.surface.redraw()
   follow_mode(session, res)
   if session.blink then
@@ -630,6 +686,7 @@ end
 function M.setup(opts)
   config = vim.tbl_extend('force', config, opts or {})
   vim.api.nvim_set_hl(0, 'RinzePreedit', { default = true, link = 'Underlined' })
+  vim.api.nvim_set_hl(0, 'RinzeAnnotation', { default = true, link = 'Comment' })
 end
 
 function insert.attach(session)

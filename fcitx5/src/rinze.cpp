@@ -190,9 +190,13 @@ private:
 class RinzeCandidate final : public fcitx::CandidateWord {
 public:
     RinzeCandidate(fcitx::TrackableObjectReference<RinzeState> state,
-                   std::string key, std::string word)
+                   std::string key, std::string word, std::string annotation)
         : CandidateWord(Text(std::move(word))), state_(std::move(state)),
-          key_(std::move(key)) {}
+          key_(std::move(key)) {
+        if (!annotation.empty()) {
+            setComment(Text(std::move(annotation)));
+        }
+    }
 
     void select(InputContext *) const override {
         if (auto *state = state_.get()) {
@@ -216,7 +220,8 @@ public:
             std::string key = rinze_response_candidate_label(response, i);
             labels_.emplace_back(key + ":");
             words_.push_back(std::make_unique<RinzeCandidate>(
-                state_, key, rinze_response_candidate_word(response, i)));
+                state_, key, rinze_response_candidate_word(response, i),
+                rinze_response_candidate_annotation(response, i)));
         }
     }
 
@@ -764,6 +769,11 @@ void RinzeState::render() {
             panel.setCandidateList(std::make_unique<RinzePage>(*this, shown_.get()));
             aux.push_back("[" + std::to_string(rinze_response_page(shown_.get()) + 1) + "/" +
                           std::to_string(rinze_response_pages(shown_.get())) + "]");
+        } else {
+            std::string annotation = rinze_response_annotation(shown_.get());
+            if (!annotation.empty()) {
+                aux.push_back(std::move(annotation));
+            }
         }
     }
     if (!notice_.empty()) {

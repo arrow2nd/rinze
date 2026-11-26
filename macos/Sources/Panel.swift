@@ -1,6 +1,18 @@
 import Cocoa
 
-/// 候補一覧、辞書登録の入力欄、知らせを出す小さな窓。入力欄のカーソルの下に置く。
+struct PanelLine {
+    let text: String
+    let note: String?
+    let secondary: Bool
+
+    init(_ text: String, note: String? = nil, secondary: Bool = false) {
+        self.text = text
+        self.note = note
+        self.secondary = secondary
+    }
+}
+
+/// 候補一覧、辞書登録の入力欄、注釈、知らせを出す小さな窓。入力欄のカーソルの下に置く。
 final class Panel {
     static let shared = Panel()
 
@@ -38,7 +50,7 @@ final class Panel {
     }
 
     /// `cursor` が nil のとき (アプリがカーソルの位置を返さない) は、前に出した位置かマウスの位置に出す。
-    func show(lines: [String], below cursor: NSRect?, owner: AnyObject) {
+    func show(lines: [PanelLine], below cursor: NSRect?, owner: AnyObject) {
         guard !lines.isEmpty else {
             hide(owner: owner)
             return
@@ -46,7 +58,28 @@ final class Panel {
         self.owner = owner
         let cursor = cursor ?? lastCursor ?? NSRect(origin: NSEvent.mouseLocation, size: .zero)
         lastCursor = cursor
-        label.stringValue = lines.joined(separator: "\n")
+        let font = NSFont.systemFont(ofSize: 14)
+        let primaryAttrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.labelColor,
+        ]
+        let secondaryAttrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ]
+        let attributed = NSMutableAttributedString()
+        for (index, line) in lines.enumerated() {
+            if index > 0 {
+                attributed.append(NSAttributedString(string: "\n", attributes: primaryAttrs))
+            }
+            let baseAttrs = line.secondary ? secondaryAttrs : primaryAttrs
+            attributed.append(NSAttributedString(string: line.text, attributes: baseAttrs))
+            if let note = line.note, !note.isEmpty {
+                attributed.append(
+                    NSAttributedString(string: "  \(note)", attributes: secondaryAttrs))
+            }
+        }
+        label.attributedStringValue = attributed
         label.preferredMaxLayoutWidth = 480
         let text = label.intrinsicContentSize
         let size = NSSize(width: text.width + 16, height: text.height + 12)
