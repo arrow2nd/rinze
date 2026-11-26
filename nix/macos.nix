@@ -6,6 +6,8 @@
   rinzed,
 }:
 let
+  version = (lib.importTOML ../Cargo.toml).workspace.package.version;
+
   rinze-client = callPackage ./rinze-client.nix { };
   header = "${rinze-client}/include/rinze_client.h";
   # 指定しないと swiftc はビルドした機械の macOS の版を下限にする。Info.plist の LSMinimumSystemVersion に合わせる
@@ -13,7 +15,7 @@ let
 in
 stdenv.mkDerivation {
   pname = "rinze-macos";
-  version = (lib.importTOML ../Cargo.toml).workspace.package.version;
+  inherit version;
   src = ../macos;
 
   nativeBuildInputs = [ swift ];
